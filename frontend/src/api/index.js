@@ -6,7 +6,9 @@ const USER_ID = 'default_user'
 
 // Auth
 export const getLinkToken = () =>
-  api.get(`/auth/link-token?user_id=${USER_ID}`).then(r => r.data.link_token)
+  fetch('/api/auth/link-token', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => d.link_token)
 
 export const exchangeToken = (public_token, institution_name) =>
   api.post('/auth/exchange-token', { public_token, institution_name, user_id: USER_ID })
@@ -14,15 +16,19 @@ export const exchangeToken = (public_token, institution_name) =>
 export const getAccounts = () =>
   api.get(`/auth/accounts?user_id=${USER_ID}`).then(r => r.data.accounts)
 
-// Subscriptions
-export const getSubscriptions = () =>
+// Subscriptions — reads from DB (fast, no Plaid call)
+export const getSavedSubscriptions = () =>
+  api.get(`/subscriptions/saved?user_id=${USER_ID}`).then(r => r.data)
+
+// Sync — calls Plaid and updates DB (slow, use sparingly)
+export const syncSubscriptions = () =>
   api.get(`/subscriptions?user_id=${USER_ID}`).then(r => r.data)
 
 export const addManualSubscription = (data) =>
   api.post(`/subscriptions/manual?user_id=${USER_ID}`, data).then(r => r.data)
 
 export const deleteSubscription = (id) =>
-  api.delete(`/subscriptions/${id}`).then(r => r.data)
+  api.delete(`/subscriptions/${id}?user_id=${USER_ID}`).then(r => r.data)
 
 // Summary
 export const getSummary = () =>

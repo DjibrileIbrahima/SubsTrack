@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getSubscriptions, getSummary, getAccounts } from '../api'
+import { getSavedSubscriptions, syncSubscriptions, getSummary, getAccounts } from '../api'
 import { usePlaid } from '../hooks/usePlaid'
 import SubscriptionList from '../components/SubscriptionList'
 import AddManualForm from '../components/AddManualForm'
@@ -11,13 +11,15 @@ export default function Dashboard() {
   const [accounts, setAccounts] = useState([])
   const [monthlyTotal, setMonthlyTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
+  // Load from DB — fast, no Plaid call
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
       const [subsData, summaryData, accountsData] = await Promise.all([
-        getSubscriptions().catch(() => ({ subscriptions: [], total_monthly_spend: 0 })),
+        getSavedSubscriptions().catch(() => ({ subscriptions: [], total_monthly_spend: 0 })),
         getSummary().catch(() => []),
         getAccounts().catch(() => []),
       ])
@@ -32,21 +34,28 @@ export default function Dashboard() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  const { fetchLinkToken, open, ready, loading: plaidLoading } = usePlaid(fetchData)
-
-  const handleConnectBank = async () => {
-    await fetchLinkToken()
-    open()
+  // Sync with Plaid — refreshes subscriptions from bank
+  const handleSync = async () => {
+    setSyncing(true)
+    try {
+      const data = await syncSubscriptions()
+      setSubs(data.subscriptions)
+      setMonthlyTotal(data.total_monthly_spend)
+    } catch (e) {
+      console.error('Sync failed:', e)
+    } finally {
+      setSyncing(false)
+    }
   }
 
-  useEffect(() => {
-    if (ready) open()
-  }, [ready])
+  const { initAndOpen, loading: plaidLoading, error: plaidError } = usePlaid(() => {
+    fetchData()
+    handleSync()
+  })
 
   return (
     <main className="dashboard">
 
-      {/* Stats row */}
       <div className="stats-row">
         <div className="stat-card">
           <p className="stat-label">Monthly Spend</p>
@@ -60,19 +69,34 @@ export default function Dashboard() {
           <p className="stat-label">Linked Accounts</p>
           <p className="stat-value">{accounts.length}</p>
         </div>
-        <button
-          className="btn-primary connect-btn"
-          onClick={handleConnectBank}
-          disabled={plaidLoading}
-        >
-          {plaidLoading ? 'Loading...' : '+ Connect Bank'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="btn-primary connect-btn"
+            onClick={initAndOpen}
+            disabled={plaidLoading}
+          >
+            {plaidLoading ? 'Connecting...' : '+ Connect Bank'}
+          </button>
+          {accounts.length > 0 && (
+            <button
+              className="btn-ghost"
+              onClick={handleSync}
+              disabled={syncing}
+            >
+              {syncing ? 'Syncing...' : '↻ Sync'}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Chart */}
+      {plaidError && (
+        <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
+          {plaidError}
+        </p>
+      )}
+
       <SpendingChart data={summary} />
 
-      {/* Subscriptions */}
       <div className="section-header">
         <h3 className="section-title">Subscriptions</h3>
         <button className="btn-ghost" onClick={() => setShowForm(!showForm)}>

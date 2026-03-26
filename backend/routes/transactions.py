@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from datetime import date, timedelta
+from typing import Optional
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from plaid.model.transactions_get_request import TransactionsGetRequest
@@ -14,7 +16,6 @@ router = APIRouter()
 
 
 async def get_access_token(user_id: str, db: AsyncSession) -> str:
-    """Fetch and decrypt the stored Plaid access token for a user."""
     result = await db.execute(
         select(LinkedAccount).where(LinkedAccount.user_id == user_id)
     )
@@ -24,8 +25,16 @@ async def get_access_token(user_id: str, db: AsyncSession) -> str:
             status_code=400,
             detail="No bank account connected. Please connect your bank first."
         )
-    # Decrypt before use — never stored or logged in plaintext
     return decrypt(account.access_token)
+
+
+def serialize_sub(sub: dict) -> dict:
+    """Convert date objects to strings for JSON response."""
+    return {
+        **sub,
+        "last_charged": sub["last_charged"].isoformat() if isinstance(sub["last_charged"], date) else sub["last_charged"],
+        "next_expected": sub["next_expected"].isoformat() if isinstance(sub["next_expected"], date) else sub["next_expected"],
+    }
 
 
 @router.get("/transactions")
@@ -34,7 +43,6 @@ async def get_transactions(
     days: int = 90,
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetch raw transactions for the last N days."""
     token = await get_access_token(user_id, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
@@ -61,7 +69,6 @@ async def get_subscriptions(
     user_id: str = "default_user",
     db: AsyncSession = Depends(get_db)
 ):
-    """Detect subscriptions, persist to DB, and return results."""
     token = await get_access_token(user_id, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=90)
@@ -101,11 +108,13 @@ async def get_subscriptions(
 
         await db.commit()
 
+        serialized = [serialize_sub(s) for s in detected]
         total_monthly = sum(s["amount"] for s in detected if s["frequency"] == "monthly")
+
         return {
-            "subscriptions": detected,
+            "subscriptions": serialized,
             "total_monthly_spend": round(total_monthly, 2),
-            "count": len(detected),
+            "count": len(serialized),
         }
     except Exception as e:
         await db.rollback()
@@ -117,7 +126,6 @@ async def get_spending_summary(
     user_id: str = "default_user",
     db: AsyncSession = Depends(get_db)
 ):
-    """Monthly spending breakdown for the last 6 months."""
     token = await get_access_token(user_id, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=180)
@@ -144,11 +152,6 @@ async def get_spending_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Manual subscription routes ──
-
-from pydantic import BaseModel
-from typing import Optional
-
 class ManualSubscriptionRequest(BaseModel):
     merchant: str
     amount: float
@@ -163,9 +166,7 @@ async def add_manual_subscription(
     user_id: str = "default_user",
     db: AsyncSession = Depends(get_db)
 ):
-    """Add a subscription manually (not from Plaid)."""
     try:
-        # Ensure user exists
         result = await db.execute(select(User).where(User.user_id == user_id))
         user = result.scalar_one_or_none()
         if not user:
@@ -173,12 +174,17 @@ async def add_manual_subscription(
             db.add(user)
             await db.flush()
 
+        next_expected = None
+        if body.next_expected:
+            from datetime import datetime
+            next_expected = datetime.strptime(body.next_expected, "%Y-%m-%d").date()
+
         sub = Subscription(
             user_id=user_id,
             merchant=body.merchant,
             amount=body.amount,
             frequency=body.frequency,
-            next_expected=body.next_expected,
+            next_expected=next_expected,
             category=body.category,
             source="manual",
         )
@@ -196,7 +202,6 @@ async def delete_subscription(
     user_id: str = "default_user",
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a subscription (manual only for safety)."""
     try:
         result = await db.execute(
             select(Subscription).where(
@@ -215,4 +220,47 @@ async def delete_subscription(
         raise
     except Exception as e:
         await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/subscriptions/saved")
+async def get_saved_subscriptions(
+    user_id: str = "default_user",
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch all saved subscriptions from DB without calling Plaid."""
+    try:
+        result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == user_id,
+                Subscription.is_active == True
+            )
+        )
+        subs = result.scalars().all()
+
+        serialized = [
+            {
+                "id": s.id,
+                "merchant": s.merchant,
+                "amount": s.amount,
+                "frequency": s.frequency,
+                "category": s.category,
+                "last_charged": s.last_charged.isoformat() if s.last_charged else None,
+                "next_expected": s.next_expected.isoformat() if s.next_expected else None,
+                "occurrences": s.occurrences,
+                "source": s.source,
+            }
+            for s in subs
+        ]
+
+        total_monthly = sum(
+            s["amount"] for s in serialized if s["frequency"] == "monthly"
+        )
+
+        return {
+            "subscriptions": serialized,
+            "total_monthly_spend": round(total_monthly, 2),
+            "count": len(serialized),
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

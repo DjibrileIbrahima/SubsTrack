@@ -1,35 +1,54 @@
 import { useState, useCallback } from 'react'
-import { usePlaidLink } from 'react-plaid-link'
 import { getLinkToken, exchangeToken } from '../api'
 
 export function usePlaid(onSuccess) {
-  const [linkToken, setLinkToken] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const fetchLinkToken = useCallback(async () => {
+  const initAndOpen = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+
+    let token
     try {
-      setLoading(true)
-      const token = await getLinkToken()
-      setLinkToken(token)
+      const data = await fetch('/api/auth/link-token', { method: 'POST' })
+      const json = await data.json()
+      token = json.link_token
+      console.log('link token:', token)
     } catch (e) {
-      setError('Failed to initialize bank connection')
-    } finally {
+      setError('Failed to fetch link token')
       setLoading(false)
+      return
     }
-  }, [])
 
-  const { open, ready } = usePlaidLink({
-    token: linkToken,
-    onSuccess: async (public_token, metadata) => {
-      try {
-        await exchangeToken(public_token, metadata.institution?.name || 'Unknown Bank')
-        onSuccess?.()
-      } catch (e) {
-        setError('Failed to connect bank account')
-      }
-    },
-  })
+    try {
+      window.Plaid.create({
+        token,
+        onSuccess: async (public_token, metadata) => {
+          try {
+            await exchangeToken(public_token, metadata.institution?.name || 'Unknown Bank')
+            onSuccess?.()
+          } catch (e) {
+            setError('Failed to save bank connection')
+          }
+        },
+        onExit: (err, metadata) => {
+          if (err) {
+            console.error('Plaid exit error:', err, metadata)
+            setError('Bank connection failed')
+          }
+        },
+        onEvent: (eventName) => {
+          console.log('Plaid event:', eventName)
+        },
+      }).open()
+    } catch (e) {
+      console.error('Plaid.create error:', e)
+      setError('Failed to open bank connection')
+    }
 
-  return { fetchLinkToken, open, ready: ready && !!linkToken, loading, error }
+    setLoading(false)
+  }, [onSuccess])
+
+  return { initAndOpen, loading, error }
 }
