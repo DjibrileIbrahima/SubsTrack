@@ -1,5 +1,6 @@
+import uuid
 from fastapi import APIRouter, HTTPException, Depends
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,15 +10,17 @@ from plaid.model.transactions_get_request_options import TransactionsGetRequestO
 from plaid_client import client
 from db.database import get_db
 from db.models import LinkedAccount, Subscription, User
+from db.deps import get_current_user
 from services.subscription_detector import detect_subscriptions
 from services.encryption import decrypt
 
 router = APIRouter()
 
 
-async def get_access_token(user_id: str, db: AsyncSession) -> str:
+async def get_access_token(user: User, db: AsyncSession) -> str:
+    """Fetch and decrypt the Plaid access token for a user."""
     result = await db.execute(
-        select(LinkedAccount).where(LinkedAccount.user_id == user_id)
+        select(LinkedAccount).where(LinkedAccount.user_id == user.id)
     )
     account = result.scalars().first()
     if not account:
@@ -28,22 +31,34 @@ async def get_access_token(user_id: str, db: AsyncSession) -> str:
     return decrypt(account.access_token)
 
 
-def serialize_sub(sub: dict) -> dict:
-    """Convert date objects to strings for JSON response."""
+def serialize_sub(s) -> dict:
+    """Serialize a Subscription model or dict to JSON-safe dict."""
+    if isinstance(s, dict):
+        return {
+            **s,
+            "last_charged": s["last_charged"].isoformat() if isinstance(s.get("last_charged"), date) else s.get("last_charged"),
+            "next_expected": s["next_expected"].isoformat() if isinstance(s.get("next_expected"), date) else s.get("next_expected"),
+        }
     return {
-        **sub,
-        "last_charged": sub["last_charged"].isoformat() if isinstance(sub["last_charged"], date) else sub["last_charged"],
-        "next_expected": sub["next_expected"].isoformat() if isinstance(sub["next_expected"], date) else sub["next_expected"],
+        "id": str(s.id),
+        "merchant": s.merchant,
+        "amount": s.amount,
+        "frequency": s.frequency,
+        "category": s.category,
+        "last_charged": s.last_charged.isoformat() if s.last_charged else None,
+        "next_expected": s.next_expected.isoformat() if s.next_expected else None,
+        "occurrences": s.occurrences,
+        "source": s.source,
     }
 
 
 @router.get("/transactions")
 async def get_transactions(
-    user_id: str = "default_user",
     days: int = 90,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    token = await get_access_token(user_id, db)
+    token = await get_access_token(current_user, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
 
@@ -64,12 +79,38 @@ async def get_transactions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/subscriptions")
-async def get_subscriptions(
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db)
+@router.get("/subscriptions/saved")
+async def get_saved_subscriptions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    token = await get_access_token(user_id, db)
+    """Fetch all saved subscriptions from DB — no Plaid call."""
+    try:
+        result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.is_active == True
+            )
+        )
+        subs = result.scalars().all()
+        serialized = [serialize_sub(s) for s in subs]
+        total_monthly = sum(s["amount"] for s in serialized if s["frequency"] == "monthly")
+        return {
+            "subscriptions": serialized,
+            "total_monthly_spend": round(total_monthly, 2),
+            "count": len(serialized),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/subscriptions")
+async def sync_subscriptions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sync subscriptions from Plaid and update DB."""
+    token = await get_access_token(current_user, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=90)
 
@@ -88,12 +129,12 @@ async def get_subscriptions(
 
         detected = detect_subscriptions(txns)
 
-        # Upsert subscriptions into DB
         for sub in detected:
             result = await db.execute(
                 select(Subscription).where(
-                    Subscription.user_id == user_id,
-                    Subscription.merchant == sub["merchant"]
+                    Subscription.user_id == current_user.id,
+                    Subscription.merchant == sub["merchant"],
+                    Subscription.source == "plaid",
                 )
             )
             existing = result.scalar_one_or_none()
@@ -104,13 +145,12 @@ async def get_subscriptions(
                 existing.next_expected = sub["next_expected"]
                 existing.occurrences = sub["occurrences"]
             else:
-                db.add(Subscription(user_id=user_id, **sub))
+                db.add(Subscription(user_id=current_user.id, **sub))
 
         await db.commit()
 
         serialized = [serialize_sub(s) for s in detected]
         total_monthly = sum(s["amount"] for s in detected if s["frequency"] == "monthly")
-
         return {
             "subscriptions": serialized,
             "total_monthly_spend": round(total_monthly, 2),
@@ -123,10 +163,10 @@ async def get_subscriptions(
 
 @router.get("/summary")
 async def get_spending_summary(
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    token = await get_access_token(user_id, db)
+    token = await get_access_token(current_user, db)
     end_date = date.today()
     start_date = end_date - timedelta(days=180)
 
@@ -163,24 +203,16 @@ class ManualSubscriptionRequest(BaseModel):
 @router.post("/subscriptions/manual")
 async def add_manual_subscription(
     body: ManualSubscriptionRequest,
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
-        result = await db.execute(select(User).where(User.user_id == user_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            user = User(user_id=user_id)
-            db.add(user)
-            await db.flush()
-
         next_expected = None
         if body.next_expected:
-            from datetime import datetime
             next_expected = datetime.strptime(body.next_expected, "%Y-%m-%d").date()
 
         sub = Subscription(
-            user_id=user_id,
+            user_id=current_user.id,
             merchant=body.merchant,
             amount=body.amount,
             frequency=body.frequency,
@@ -198,16 +230,16 @@ async def add_manual_subscription(
 
 @router.delete("/subscriptions/{subscription_id}")
 async def delete_subscription(
-    subscription_id: int,
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db)
+    subscription_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         result = await db.execute(
             select(Subscription).where(
                 Subscription.id == subscription_id,
-                Subscription.user_id == user_id,
-                Subscription.source == "manual"
+                Subscription.user_id == current_user.id,
+                Subscription.source == "manual",
             )
         )
         sub = result.scalar_one_or_none()
@@ -220,47 +252,4 @@ async def delete_subscription(
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/subscriptions/saved")
-async def get_saved_subscriptions(
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db)
-):
-    """Fetch all saved subscriptions from DB without calling Plaid."""
-    try:
-        result = await db.execute(
-            select(Subscription).where(
-                Subscription.user_id == user_id,
-                Subscription.is_active == True
-            )
-        )
-        subs = result.scalars().all()
-
-        serialized = [
-            {
-                "id": s.id,
-                "merchant": s.merchant,
-                "amount": s.amount,
-                "frequency": s.frequency,
-                "category": s.category,
-                "last_charged": s.last_charged.isoformat() if s.last_charged else None,
-                "next_expected": s.next_expected.isoformat() if s.next_expected else None,
-                "occurrences": s.occurrences,
-                "source": s.source,
-            }
-            for s in subs
-        ]
-
-        total_monthly = sum(
-            s["amount"] for s in serialized if s["frequency"] == "monthly"
-        )
-
-        return {
-            "subscriptions": serialized,
-            "total_monthly_spend": round(total_monthly, 2),
-            "count": len(serialized),
-        }
-    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
