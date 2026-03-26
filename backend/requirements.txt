@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+plaid-python
+python-dotenv
+apscheduler
+sqlalchemy[asyncio]
+asyncpg
+alembic
+cryptography
