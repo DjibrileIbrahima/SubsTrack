@@ -4,6 +4,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 import os
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Make sure backend/ is on the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -35,7 +39,12 @@ def do_run_migrations(connection):
 
 
 async def run_migrations_online():
-    url = config.get_main_option("sqlalchemy.url")
+    url = os.getenv("DATABASE_URL") 
+
+    # Fallback to config if .env isn't found
+    if not url:
+        url = config.get_main_option("sqlalchemy.url")
+        
     connectable = create_async_engine(url)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

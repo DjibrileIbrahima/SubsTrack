@@ -1,4 +1,3 @@
-version: "3.8"
 
 # Development mode — only runs the DB
 # Backend and frontend run locally with hot reload

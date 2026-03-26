@@ -20,3 +20,5 @@ Thumbs.db
 
 # Alembic (keep versions, ignore cache)
 alembic/__pycache__/
+
+.vscode/

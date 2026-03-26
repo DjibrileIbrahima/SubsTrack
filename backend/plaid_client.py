@@ -14,7 +14,7 @@ PLAID_ENV = os.getenv("PLAID_ENV", "sandbox")
 # Map env string to Plaid environment
 ENV_MAP = {
     "sandbox": Environment.Sandbox,
-    "development": Environment.Development,
+    #"development": Environment.Development,
     "production": Environment.Production,
 }
 
