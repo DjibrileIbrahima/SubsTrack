@@ -108,8 +108,17 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
         await db.refresh(user)
 
     token = create_access_token(str(user.id))
-    return RedirectResponse(f"{FRONTEND_URL}/auth/callback?token={token}")
-
+    return RedirectResponse(f"{FRONTEND_URL}/auth/callback")
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=False,   # change to True in production with HTTPS
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+        path="/",
+    )
+    return response
 
 class PublicTokenRequest(BaseModel):
     public_token: str

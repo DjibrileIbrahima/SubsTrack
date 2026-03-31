@@ -1,8 +1,8 @@
-"""initial
+"""initial tables
 
-Revision ID: 863611670cd7
+Revision ID: 1a3a0c5b68e8
 Revises: 
-Create Date: 2026-03-31 11:29:27.975604
+Create Date: 2026-03-31 14:28:46.357267
 
 """
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = '863611670cd7'
+revision: str = '1a3a0c5b68e8'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

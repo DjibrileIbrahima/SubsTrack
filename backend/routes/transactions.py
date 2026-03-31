@@ -1,7 +1,7 @@
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from datetime import date, timedelta, datetime
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from plaid_client import client
 from db.database import get_db
 from db.models import LinkedAccount, Subscription, User
 from db.deps import get_current_user
-from services.subscription_detector import detect_subscriptions
+from services.subscription_pipeline import run_subscription_pipeline
 from services.encryption import decrypt
 
 router = APIRouter()
@@ -49,6 +49,9 @@ def serialize_sub(s) -> dict:
         "next_expected": s.next_expected.isoformat() if s.next_expected else None,
         "occurrences": s.occurrences,
         "source": s.source,
+        "confidence": getattr(s, "confidence", None),
+        "detection_method": getattr(s, "detection_method", None),
+        "reason": getattr(s, "reason", None),
     }
 
 
@@ -127,7 +130,7 @@ async def sync_subscriptions(
             if isinstance(t.get("date"), date):
                 t["date"] = t["date"].isoformat()
 
-        detected = detect_subscriptions(txns)
+        detected = run_subscription_pipeline(txns)
 
         for sub in detected:
             result = await db.execute(
@@ -139,18 +142,39 @@ async def sync_subscriptions(
             )
             existing = result.scalar_one_or_none()
             if existing:
+                if existing.is_active is False:
+                    continue
                 existing.amount = sub["amount"]
                 existing.frequency = sub["frequency"]
+                existing.category = sub["category"]
                 existing.last_charged = sub["last_charged"]
                 existing.next_expected = sub["next_expected"]
                 existing.occurrences = sub["occurrences"]
             else:
-                db.add(Subscription(user_id=current_user.id, **sub))
+                db.add(Subscription(
+                    user_id=current_user.id,
+                    merchant=sub["merchant"],
+                    amount=sub["amount"],
+                    frequency=sub["frequency"],
+                    category=sub["category"],
+                    last_charged=sub["last_charged"],
+                    next_expected=sub["next_expected"],
+                    occurrences=sub["occurrences"],
+                    source="plaid",
+                ))
 
         await db.commit()
 
-        serialized = [serialize_sub(s) for s in detected]
-        total_monthly = sum(s["amount"] for s in detected if s["frequency"] == "monthly")
+        result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.is_active == True,
+            )
+        )
+        subs = result.scalars().all()
+
+        serialized = [serialize_sub(s) for s in subs]
+        total_monthly = sum(s["amount"] for s in serialized if s["frequency"] == "monthly")
         return {
             "subscriptions": serialized,
             "total_monthly_spend": round(total_monthly, 2),
@@ -182,9 +206,13 @@ async def get_spending_summary(
 
         monthly = {}
         for t in txns:
+            amount = t.get("amount", 0)
+            if not amount or amount <= 0:
+                continue
+
             d = t["date"] if isinstance(t["date"], str) else t["date"].isoformat()
             month = d[:7]
-            monthly[month] = monthly.get(month, 0) + abs(t["amount"])
+            monthly[month] = monthly.get(month, 0) + amount
 
         summary = [{"month": k, "total": round(v, 2)} for k, v in sorted(monthly.items())]
         return {"monthly_summary": summary}
@@ -195,7 +223,7 @@ async def get_spending_summary(
 class ManualSubscriptionRequest(BaseModel):
     merchant: str
     amount: float
-    frequency: str
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_expected: Optional[str] = None
     category: Optional[str] = "Manual"
 
@@ -222,10 +250,11 @@ async def add_manual_subscription(
         )
         db.add(sub)
         await db.commit()
-        return {"message": f"{body.merchant} added successfully"}
-    except Exception as e:
+        await db.refresh(sub)
+        return {"message": f"{body.merchant} added successfully", "subscription": serialize_sub(sub)}
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to add manual subscription")
 
 
 @router.delete("/subscriptions/{subscription_id}")
@@ -239,17 +268,18 @@ async def delete_subscription(
             select(Subscription).where(
                 Subscription.id == subscription_id,
                 Subscription.user_id == current_user.id,
-                Subscription.source == "manual",
+                Subscription.is_active == True,
             )
         )
         sub = result.scalar_one_or_none()
         if not sub:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        await db.delete(sub)
+        
+        sub.is_active = False
         await db.commit()
-        return {"message": "Subscription deleted"}
+        return {"message": "Subscription removed"}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete subscriptions")
