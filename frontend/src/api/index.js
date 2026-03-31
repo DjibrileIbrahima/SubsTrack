@@ -2,11 +2,9 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api' })
 
-// Auth
+// Auth — token is set globally via AuthContext
 export const getLinkToken = () =>
-  fetch('/api/auth/link-token', { method: 'POST' })
-    .then(r => r.json())
-    .then(d => d.link_token)
+  api.post('/auth/link-token').then(r => r.data.link_token)
 
 export const exchangeToken = (public_token, institution_name) =>
   api.post('/auth/exchange-token', { public_token, institution_name })
@@ -14,11 +12,10 @@ export const exchangeToken = (public_token, institution_name) =>
 export const getAccounts = () =>
   api.get('/auth/accounts').then(r => r.data.accounts)
 
-// Subscriptions — reads from DB (fast, no Plaid call)
+// Subscriptions
 export const getSavedSubscriptions = () =>
   api.get('/subscriptions/saved').then(r => r.data)
 
-// Sync — calls Plaid and updates DB
 export const syncSubscriptions = () =>
   api.get('/subscriptions').then(r => r.data)
 

@@ -8,3 +8,7 @@ asyncpg
 alembic
 cryptography
 bcrypt
+PyJWT
+httpx
+email-validator
+slowapi

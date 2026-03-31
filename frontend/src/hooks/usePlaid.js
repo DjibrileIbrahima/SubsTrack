@@ -11,10 +11,8 @@ export function usePlaid(onSuccess) {
 
     let token
     try {
-      const data = await fetch('/api/auth/link-token', { method: 'POST' })
-      const json = await data.json()
-      token = json.link_token
-      console.log('link token:', token)
+      token = await getLinkToken()
+      console.log('link token fetched:', !!token)
     } catch (e) {
       setError('Failed to fetch link token')
       setLoading(false)
@@ -32,14 +30,11 @@ export function usePlaid(onSuccess) {
             setError('Failed to save bank connection')
           }
         },
-        onExit: (err, metadata) => {
+        onExit: (err) => {
           if (err) {
-            console.error('Plaid exit error:', err, metadata)
+            console.error('Plaid exit:', err)
             setError('Bank connection failed')
           }
-        },
-        onEvent: (eventName) => {
-          console.log('Plaid event:', eventName)
         },
       }).open()
     } catch (e) {

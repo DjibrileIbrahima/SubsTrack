@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
+import { useAuth } from '../context/AuthContext'
 import { getAlerts, markAlertRead } from '../api'
 
 export default function Navbar() {
+  const { user, logout } = useAuth()
   const [alerts, setAlerts] = useState([])
-  const [open, setOpen] = useState(false)
+  const [alertsOpen, setAlertsOpen] = useState(false)
+  const [userOpen, setUserOpen] = useState(false)
 
   useEffect(() => {
     getAlerts().catch(() => setAlerts([]))
@@ -24,12 +27,13 @@ export default function Navbar() {
       </div>
 
       <div className="navbar-actions">
-        <button className="bell-btn" onClick={() => setOpen(!open)}>
+        {/* Alerts bell */}
+        <button className="bell-btn" onClick={() => { setAlertsOpen(!alertsOpen); setUserOpen(false) }}>
           <BellIcon />
           {unread > 0 && <span className="badge">{unread}</span>}
         </button>
 
-        {open && (
+        {alertsOpen && (
           <div className="alerts-dropdown">
             <p className="alerts-title">Upcoming Charges</p>
             {alerts.length === 0 ? (
@@ -44,6 +48,18 @@ export default function Navbar() {
                 </div>
               ))
             )}
+          </div>
+        )}
+
+        {/* User menu */}
+        <button className="user-btn" onClick={() => { setUserOpen(!userOpen); setAlertsOpen(false) }}>
+          <span className="user-avatar">{user?.email?.[0]?.toUpperCase() ?? 'U'}</span>
+        </button>
+
+        {userOpen && (
+          <div className="user-dropdown">
+            <p className="user-email">{user?.email}</p>
+            <button className="logout-btn" onClick={logout}>Sign out</button>
           </div>
         )}
       </div>
