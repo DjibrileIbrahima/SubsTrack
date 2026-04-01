@@ -116,7 +116,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user:
-        user = User(email=email, hashed_password="google_oauth")
+        user = User(email=email, hashed_password=None)
         db.add(user)
         await db.commit()
         await db.refresh(user)

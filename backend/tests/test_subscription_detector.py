@@ -203,5 +203,3 @@ class TestDetectSubscriptions:
         results = detect_subscriptions(txns)
         assert len(results) == 1
         assert results[0]["next_expected"] > results[0]["last_charged"]
-
-pytest
