@@ -1,5 +1,4 @@
 import os
-import uuid
 import httpx
 import bcrypt
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -108,7 +107,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
         await db.refresh(user)
 
     token = create_access_token(str(user.id))
-    return RedirectResponse(f"{FRONTEND_URL}/auth/callback")
+    response = RedirectResponse(f"{FRONTEND_URL}/auth/callback")
     response.set_cookie(
         key="access_token",
         value=token,
