@@ -251,6 +251,7 @@ def detect_subscriptions(transactions: list[dict], min_confidence: float = 0.75)
             "confidence": c["confidence"],
             "detection_method": c["detection_method"],
             "reason": c["reason"],
+            "source": "plaid",
         }
         for c in accepted
     ]
