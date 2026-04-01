@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
-import axios from 'axios'
+import api from '../../api'
 
 export default function Register({ onSwitch }) {
   const { login } = useAuth()
@@ -17,11 +17,8 @@ export default function Register({ onSwitch }) {
     try {
       setLoading(true)
       setError(null)
-      const { data } = await axios.post('/api/auth/register', {
-        email: form.email,
-        password: form.password,
-      })
-      login(data)
+      await api.post('/auth/register', { email: form.email, password: form.password })
+      await login()  // fetch /me to populate user state
     } catch (e) {
       setError(e.response?.data?.detail || 'Registration failed')
     } finally {
@@ -29,13 +26,8 @@ export default function Register({ onSwitch }) {
     }
   }
 
-  const handleGoogle = () => {
-    window.location.href = '/api/auth/google'
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') handleSubmit()
-  }
+  const handleGoogle = () => { window.location.href = '/api/auth/google' }
+  const handleKeyDown = (e) => { if (e.key === 'Enter') handleSubmit() }
 
   return (
     <div className="auth-card">

@@ -11,7 +11,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)        # stored plain, encrypt in Phase 8
-    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String, nullable=True)
     phone: Mapped[str] = mapped_column(String(255), nullable=True)        # will be encrypted when SMS added
 
     alert_email: Mapped[bool] = mapped_column(Boolean, default=False)

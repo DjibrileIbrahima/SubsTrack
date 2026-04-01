@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
-import axios from 'axios'
+import api from '../../api'
 
 export default function Login({ onSwitch }) {
   const { login } = useAuth()
@@ -15,8 +15,8 @@ export default function Login({ onSwitch }) {
     try {
       setLoading(true)
       setError(null)
-      const { data } = await axios.post('/api/auth/login', form)
-      login(data)
+      await api.post('/auth/login', form)  // backend sets HttpOnly cookie
+      await login()                         // fetch /me to populate user state
     } catch (e) {
       setError(e.response?.data?.detail || 'Invalid email or password')
     } finally {
@@ -24,13 +24,8 @@ export default function Login({ onSwitch }) {
     }
   }
 
-  const handleGoogle = () => {
-    window.location.href = '/api/auth/google'
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') handleSubmit()
-  }
+  const handleGoogle = () => { window.location.href = '/api/auth/google' }
+  const handleKeyDown = (e) => { if (e.key === 'Enter') handleSubmit() }
 
   return (
     <div className="auth-card">
@@ -38,45 +33,21 @@ export default function Login({ onSwitch }) {
         <span className="brand-mark">S</span>
         <span className="brand-name">SubsTrack</span>
       </div>
-
       <h1 className="auth-title">Welcome back</h1>
       <p className="auth-subtitle">Sign in to your account</p>
-
       {error && <p className="auth-error">{error}</p>}
-
       <div className="auth-fields">
-        <input
-          className="form-input"
-          type="email"
-          placeholder="Email"
-          value={form.email}
-          onChange={set('email')}
-          onKeyDown={handleKeyDown}
-          autoFocus
-        />
-        <input
-          className="form-input"
-          type="password"
-          placeholder="Password"
-          value={form.password}
-          onChange={set('password')}
-          onKeyDown={handleKeyDown}
-        />
+        <input className="form-input" type="email" placeholder="Email"
+          value={form.email} onChange={set('email')} onKeyDown={handleKeyDown} autoFocus />
+        <input className="form-input" type="password" placeholder="Password"
+          value={form.password} onChange={set('password')} onKeyDown={handleKeyDown} />
       </div>
-
       <button className="btn-primary auth-btn" onClick={handleSubmit} disabled={loading}>
         {loading ? 'Signing in...' : 'Sign in'}
       </button>
-
       <div className="auth-divider"><span>or</span></div>
-
-      <button className="btn-google" onClick={handleGoogle}>
-        <GoogleIcon />
-        Continue with Google
-      </button>
-
-      <p className="auth-switch">
-        Don't have an account?{' '}
+      <button className="btn-google" onClick={handleGoogle}><GoogleIcon />Continue with Google</button>
+      <p className="auth-switch">Don't have an account?{' '}
         <button className="link-btn" onClick={onSwitch}>Sign up</button>
       </p>
     </div>

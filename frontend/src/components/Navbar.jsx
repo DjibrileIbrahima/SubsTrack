@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { getAlerts, markAlertRead } from '../api'
 
@@ -7,9 +7,22 @@ export default function Navbar() {
   const [alerts, setAlerts] = useState([])
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [userOpen, setUserOpen] = useState(false)
+  const navRef = useRef(null)
 
   useEffect(() => {
     getAlerts().catch(() => setAlerts([]))
+  }, [])
+
+  // Close dropdowns when clicking outside the navbar
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (navRef.current && !navRef.current.contains(e.target)) {
+        setAlertsOpen(false)
+        setUserOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
   const unread = alerts.filter(a => !a.is_read).length
@@ -20,7 +33,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav className="navbar">
+    <nav className="navbar" ref={navRef}>
       <div className="navbar-brand">
         <span className="brand-mark">S</span>
         <span className="brand-name">SubsTrack</span>
@@ -28,7 +41,7 @@ export default function Navbar() {
 
       <div className="navbar-actions">
         {/* Alerts bell */}
-        <button className="bell-btn" onClick={() => { setAlertsOpen(!alertsOpen); setUserOpen(false) }}>
+        <button className="bell-btn" onClick={() => { setAlertsOpen(o => !o); setUserOpen(false) }}>
           <BellIcon />
           {unread > 0 && <span className="badge">{unread}</span>}
         </button>
@@ -52,7 +65,7 @@ export default function Navbar() {
         )}
 
         {/* User menu */}
-        <button className="user-btn" onClick={() => { setUserOpen(!userOpen); setAlertsOpen(false) }}>
+        <button className="user-btn" onClick={() => { setUserOpen(o => !o); setAlertsOpen(false) }}>
           <span className="user-avatar">{user?.email?.[0]?.toUpperCase() ?? 'U'}</span>
         </button>
 

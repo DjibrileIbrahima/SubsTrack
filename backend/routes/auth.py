@@ -1,7 +1,7 @@
 import os
 import httpx
 import bcrypt
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,15 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
+def set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="access_token", value=token,
+        httponly=True, secure=COOKIE_SECURE,
+        samesite="lax", max_age=COOKIE_MAX_AGE, path="/",
+    )
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -30,7 +38,7 @@ class RegisterRequest(BaseModel):
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(response: Response, body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -42,7 +50,8 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
     token = create_access_token(str(user.id))
-    return {"access_token": token, "token_type": "bearer", "email": user.email}
+    set_auth_cookie(response, token)
+    return {"email": user.email}
 
 
 class LoginRequest(BaseModel):
@@ -51,13 +60,19 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if not user or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(str(user.id))
-    return {"access_token": token, "token_type": "bearer", "email": user.email}
+    set_auth_cookie(response, token)
+    return {"email": user.email}
+
+@router.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(key="access_token", path="/")
+    return {"message": "Logged out"}
 
 
 @router.get("/google")
@@ -107,16 +122,8 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
         await db.refresh(user)
 
     token = create_access_token(str(user.id))
-    response = RedirectResponse(f"{FRONTEND_URL}/auth/callback")
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=False,   # change to True in production with HTTPS
-        samesite="lax",
-        max_age=60 * 60 * 24 * 7,
-        path="/",
-    )
+    response = RedirectResponse(f"{FRONTEND_URL}/")
+    set_auth_cookie(response, token)
     return response
 
 class PublicTokenRequest(BaseModel):

@@ -1,18 +1,15 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '/api', withCredentials: true, })
-
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+// All requests send the HttpOnly session cookie automatically.
+// No Authorization header needed — auth is handled server-side via cookie.
+const api = axios.create({
+  baseURL: '/api',
+  withCredentials: true,
 })
 
 export default api
 
-// Auth — token is set globally via AuthContext
+// Auth
 export const getLinkToken = () =>
   api.post('/auth/link-token').then(r => r.data.link_token)
 

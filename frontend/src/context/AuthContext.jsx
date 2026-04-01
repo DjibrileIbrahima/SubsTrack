@@ -1,50 +1,31 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import axios from 'axios'
+import api from '../api'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem('token'))
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (token) {
-      localStorage.setItem('token', token)
-    } else {
-      localStorage.removeItem('token')
-    }
-  }, [token])
-
-  useEffect(() => {
-    if (!token) {
-      setLoading(false)
-      return
-    }
-
-    axios.get('/api/auth/me', {
-      headers: { Authorization: `Bearer ${token}` }
-    })
+    api.get('/auth/me')
       .then(r => setUser(r.data))
-      .catch(() => {
-        setToken(null)
-        setUser(null)
-      })
+      .catch(() => setUser(null))
       .finally(() => setLoading(false))
-  }, [token])
-
-  const login = useCallback((data) => {
-    setToken(data.access_token)
-    setUser({ email: data.email })
   }, [])
 
-  const logout = useCallback(() => {
-    setToken(null)
+  const login = useCallback(async () => {
+    const { data } = await api.get('/auth/me')
+    setUser(data)
+  }, [])
+
+  const logout = useCallback(async () => {
+    await api.post('/auth/logout').catch(() => {})
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ token, user, login, logout, loading, isAuthenticated: !!token }}>
+    <AuthContext.Provider value={{ user, login, logout, loading, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   )
