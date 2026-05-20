@@ -7,7 +7,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://substrack:substrack_password@localhost:5433/substrack"
+    "postgresql+asyncpg://substrack:substrack_password@localhost:5432/substrack"
 )
 
 engine = create_async_engine(DATABASE_URL, echo=os.getenv("SQL_ECHO", "false").lower() == "true")
