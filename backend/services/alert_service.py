@@ -2,7 +2,8 @@ import logging
 from datetime import date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from db.models import Alert, Subscription
+from db.models import Alert, Subscription, User
+from services.email import send_alert_email
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,9 @@ async def generate_upcoming_alerts(db: AsyncSession, days_ahead: int = 7) -> int
     )
     subs = result.scalars().all()
 
-    created = 0
+    # user_id -> list of dicts used both for Alert creation and email rendering
+    new_by_user: dict = {}
+
     for sub in subs:
         existing = await db.execute(
             select(Alert).where(
@@ -48,9 +51,32 @@ async def generate_upcoming_alerts(db: AsyncSession, days_ahead: int = 7) -> int
             due_date=sub.next_expected,
         )
         db.add(alert)
-        created += 1
+        new_by_user.setdefault(sub.user_id, []).append(
+            {"merchant": sub.merchant, "amount": sub.amount, "when": when}
+        )
 
-    if created:
+    total = sum(len(v) for v in new_by_user.values())
+
+    if total:
         await db.commit()
-    logger.info("Alert generation complete: %d new alerts created", created)
-    return created
+        await _send_email_notifications(db, new_by_user)
+
+    logger.info("Alert generation complete: %d new alerts created", total)
+    return total
+
+
+async def _send_email_notifications(db: AsyncSession, new_by_user: dict) -> None:
+    if not new_by_user:
+        return
+
+    result = await db.execute(
+        select(User).where(
+            User.id.in_(list(new_by_user.keys())),
+            User.alert_email == True,
+        )
+    )
+    users = result.scalars().all()
+
+    for user in users:
+        alerts = new_by_user[user.id]
+        await send_alert_email(user.email, alerts)
