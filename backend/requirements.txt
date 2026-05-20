@@ -12,3 +12,4 @@ PyJWT
 httpx
 email-validator
 slowapi
+redis

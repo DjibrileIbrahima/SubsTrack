@@ -4,8 +4,7 @@ import secrets
 import httpx
 import bcrypt
 from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from limiter import limiter
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +21,6 @@ from services.jwt import create_access_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-limiter = Limiter(key_func=get_remote_address)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
