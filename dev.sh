@@ -47,11 +47,18 @@ if [ ! -f "$VENV/Scripts/python.exe" ] && [ ! -f "$VENV/bin/python" ]; then
     "$SYS_PYTHON" -m venv "$VENV"
 fi
 
+# Detect WSL (Linux kernel with "microsoft" in its name)
+IS_WSL=false
+[[ "$(uname -r 2>/dev/null)" == *microsoft* ]] && IS_WSL=true
+
 # Resolve any venv binary correctly on Windows (Scripts/*.exe) or Unix (bin/*)
 if [ -f "$VENV/Scripts/python.exe" ]; then
     venv_bin() { echo "$VENV/Scripts/$1.exe"; }
+    # Windows .exe binaries need Windows-style paths when called from WSL
+    win_path() { $IS_WSL && wslpath -w "$1" || echo "$1"; }
 else
     venv_bin() { echo "$VENV/bin/$1"; }
+    win_path() { echo "$1"; }
 fi
 
 PYTHON="$(venv_bin python)"
@@ -61,7 +68,7 @@ PIP="$(venv_bin pip)"
 # ── install / sync requirements ───────────────────────────────────────────────
 
 log "Checking Python requirements..."
-"$PIP" install -q -r "$BACKEND/requirements.txt"
+"$PIP" install -q -r "$(win_path "$BACKEND/requirements.txt")"
 log "Requirements up to date."
 
 command -v docker &>/dev/null || err "Docker not found. Install Docker Desktop and try again."
