@@ -107,7 +107,7 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or not secrets.compare_digest(stored_state, state):
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    async with httpx.AsyncClient() as http:
+    async with httpx.AsyncClient(timeout=10) as http:
         token_response = await http.post(
             "https://oauth2.googleapis.com/token",
             data={
@@ -118,13 +118,18 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
                 "grant_type": "authorization_code",
             },
         )
+        if token_response.status_code != 200:
+            logger.error("Google token exchange failed: %s", token_response.text)
+            raise HTTPException(status_code=400, detail="Google authentication failed")
         token_data = token_response.json()
         if "error" in token_data:
-            raise HTTPException(status_code=400, detail=token_data["error"])
+            raise HTTPException(status_code=400, detail="Google authentication failed")
         user_info_response = await http.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {token_data['access_token']}"},
         )
+        if user_info_response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch Google user info")
         user_info = user_info_response.json()
 
     email = user_info.get("email")
@@ -151,7 +156,8 @@ class PublicTokenRequest(BaseModel):
 
 
 @router.post("/link-token")
-async def create_link_token(current_user: User = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def create_link_token(request: Request, current_user: User = Depends(get_current_user)):
     try:
         request = LinkTokenCreateRequest(
             products=PLAID_PRODUCTS,
@@ -168,7 +174,9 @@ async def create_link_token(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/exchange-token")
+@limiter.limit("10/minute")
 async def exchange_public_token(
+    request: Request,
     body: PublicTokenRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

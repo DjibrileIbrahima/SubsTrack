@@ -8,19 +8,27 @@ from services.email import send_alert_email
 logger = logging.getLogger(__name__)
 
 
-async def generate_upcoming_alerts(db: AsyncSession, days_ahead: int = 7) -> int:
-    """Create Alert rows for subscriptions due within days_ahead days. Idempotent."""
+async def generate_upcoming_alerts(
+    db: AsyncSession, days_ahead: int = 7, user_id=None
+) -> int:
+    """Create Alert rows for subscriptions due within days_ahead days. Idempotent.
+
+    Pass user_id to scope to a single user (manual trigger from API).
+    Omit user_id for the scheduled job which runs across all users.
+    """
     today = date.today()
     cutoff = today + timedelta(days=days_ahead)
 
-    result = await db.execute(
-        select(Subscription).where(
-            Subscription.is_active == True,
-            Subscription.next_expected != None,
-            Subscription.next_expected >= today,
-            Subscription.next_expected <= cutoff,
-        )
-    )
+    filters = [
+        Subscription.is_active == True,
+        Subscription.next_expected != None,
+        Subscription.next_expected >= today,
+        Subscription.next_expected <= cutoff,
+    ]
+    if user_id is not None:
+        filters.append(Subscription.user_id == user_id)
+
+    result = await db.execute(select(Subscription).where(*filters))
     subs = result.scalars().all()
 
     # user_id -> list of dicts used both for Alert creation and email rendering

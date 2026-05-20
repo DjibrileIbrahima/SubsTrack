@@ -1,12 +1,13 @@
 import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.database import get_db
 from db.models import Alert, User
 from db.deps import get_current_user
 from services.alert_service import generate_upcoming_alerts
+from limiter import limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -81,13 +82,15 @@ async def delete_alert(
 
 
 @router.post("/alerts/generate")
+@limiter.limit("5/minute")
 async def trigger_alert_generation(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Manually trigger alert generation for the current user's subscriptions."""
+    """Manually trigger alert generation scoped to the current user only."""
     try:
-        count = await generate_upcoming_alerts(db)
+        count = await generate_upcoming_alerts(db, user_id=current_user.id)
         return {"message": f"{count} new alert(s) created"}
     except Exception:
         logger.exception("Failed to generate alerts")

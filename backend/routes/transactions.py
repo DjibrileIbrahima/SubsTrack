@@ -1,6 +1,6 @@
 import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from datetime import date, timedelta, datetime
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ from db.models import LinkedAccount, Subscription, User
 from db.deps import get_current_user
 from services.subscription_pipeline import run_subscription_pipeline
 from services.encryption import decrypt
+from limiter import limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -235,7 +236,9 @@ class ManualSubscriptionRequest(BaseModel):
 
 
 @router.post("/subscriptions/manual")
+@limiter.limit("30/minute")
 async def add_manual_subscription(
+    request: Request,
     body: ManualSubscriptionRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

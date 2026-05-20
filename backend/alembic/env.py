@@ -15,7 +15,6 @@ env_path = os.path.join(backend_dir, ".env")
 load_dotenv(env_path, override=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-print(f"[alembic] Using DATABASE_URL: {DATABASE_URL}")
 
 if not DATABASE_URL:
     raise RuntimeError(f"DATABASE_URL not found in {env_path}")
