@@ -6,13 +6,14 @@ A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 - **Backend:** FastAPI + SQLAlchemy (async) + Alembic
 - **Frontend:** React + Vite + Recharts
 - **Database:** PostgreSQL (Docker)
+- **Cache / Rate limiting:** Redis (Docker)
 - **Banking:** Plaid API (Sandbox)
 
 ## Project Structure
 ```
 SubsTrack/
-├── docker-compose.yml         # Production (all 3 containers)
-├── docker-compose.dev.yml     # Development (DB only)
+├── docker-compose.yml         # Production (all 4 containers)
+├── docker-compose.dev.yml     # Development (DB + Redis)
 ├── .gitignore
 ├── backend/
 │   ├── Dockerfile
@@ -80,6 +81,13 @@ The following controls are in place across the stack.
 - Plaid `access_token` values encrypted at rest with **Fernet** (AES-128-CBC + HMAC-SHA256); key loaded from `ENCRYPTION_KEY` env var — app refuses to start if unset
 - Backend API port **not** exposed in Docker — all external traffic goes through nginx
 
+### Rate limiting
+- `POST /api/auth/login` — **10 requests/minute** per IP
+- `POST /api/auth/register` — **5 requests/minute** per IP
+- Enforced by **slowapi** backed by **Redis**, so limits are shared across all backend instances and survive restarts
+- Exceeding the limit returns `429 Too Many Requests`
+- `REDIS_URL` defaults to `redis://localhost:6379`; set to `redis://redis:6379` in production Docker (handled automatically by `docker-compose.yml`)
+
 ### Input validation
 - All query parameters validated by FastAPI/Pydantic — e.g. `?days` clamped to 1–365
 - Manual subscription fields validated: merchant length 1–100, amount > 0 and ≤ 100,000, category length ≤ 100
@@ -120,11 +128,12 @@ The following values are **required** — the app or Docker will refuse to start
 - `JWT_SECRET` — secret for signing auth tokens
 - `PLAID_CLIENT_ID` / `PLAID_SECRET` — from your Plaid dashboard
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — from Google Cloud Console
+- `REDIS_URL` — defaults to `redis://localhost:6379` (dev compose provides Redis automatically)
 
-### 3. Start the database
+### 3. Start the database and Redis
 ```bash
-# From root SubsTrack/ folder
-docker compose -f docker-compose.dev.yml up -d
+# From root SubsTrack/ folder — starts PostgreSQL and Redis
+docker compose -f docker-compose.dev.yml --env-file backend/.env up -d
 ```
 
 ### 4. Run backend
