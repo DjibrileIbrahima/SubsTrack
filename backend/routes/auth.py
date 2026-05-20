@@ -83,13 +83,8 @@ async def logout(response: Response):
 
 
 @router.get("/google")
-async def google_login(response: Response):
+async def google_login():
     state = secrets.token_urlsafe(32)
-    response.set_cookie(
-        key="oauth_state", value=state,
-        httponly=True, secure=COOKIE_SECURE,
-        samesite="lax", max_age=300, path="/",
-    )
     params = (
         f"client_id={GOOGLE_CLIENT_ID}"
         f"&redirect_uri={GOOGLE_REDIRECT_URI}"
@@ -98,7 +93,13 @@ async def google_login(response: Response):
         f"&access_type=offline"
         f"&state={state}"
     )
-    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+    redirect = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+    redirect.set_cookie(
+        key="oauth_state", value=state,
+        httponly=True, secure=COOKIE_SECURE,
+        samesite="lax", max_age=300, path="/",
+    )
+    return redirect
 
 
 @router.get("/google/callback")
