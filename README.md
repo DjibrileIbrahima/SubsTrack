@@ -54,6 +54,51 @@ SubsTrack/
             └── SpendingChart.jsx
 ```
 
+## Security
+
+The following controls are in place across the stack.
+
+### Authentication & sessions
+- Passwords hashed with **bcrypt**
+- Auth stored in an **HttpOnly, SameSite=lax** cookie — never readable by JavaScript
+- `COOKIE_SECURE` defaults to `true`; set it to `false` only in local dev (no HTTPS)
+- JWT tokens signed with HS256; secret loaded from `JWT_SECRET` env var — app refuses to start if unset
+- Google OAuth login protected against CSRF with a **cryptographically random `state` parameter** verified on callback
+- OAuth-only accounts (no password) are explicitly rejected at the password-login endpoint
+
+### Transport & headers
+- nginx serves the following security headers on every response:
+  - `X-Frame-Options: DENY` — blocks clickjacking
+  - `X-Content-Type-Options: nosniff` — disables MIME sniffing
+  - `Referrer-Policy: strict-origin-when-cross-origin`
+  - `Content-Security-Policy` — whitelists sources, blocks inline scripts and object embeds
+  - `Permissions-Policy` — disables camera, microphone, and geolocation
+  - `server_tokens off` — hides nginx version
+- CORS restricted to origins in `CORS_ORIGINS` with an explicit header whitelist (`Content-Type`, `Authorization`, `X-Requested-With`)
+
+### Data protection
+- Plaid `access_token` values encrypted at rest with **Fernet** (AES-128-CBC + HMAC-SHA256); key loaded from `ENCRYPTION_KEY` env var — app refuses to start if unset
+- Backend API port **not** exposed in Docker — all external traffic goes through nginx
+
+### Input validation
+- All query parameters validated by FastAPI/Pydantic — e.g. `?days` clamped to 1–365
+- Manual subscription fields validated: merchant length 1–100, amount > 0 and ≤ 100,000, category length ≤ 100
+- 500 handlers return generic messages; full errors logged server-side only
+
+### Secrets management
+- `.env` is git-ignored; **never commit real secrets**
+- `POSTGRES_PASSWORD` is required at compose startup — Docker will refuse to start if unset
+- Generate the encryption key with:
+  ```bash
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  ```
+- Generate a JWT secret with:
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+---
+
 ## Local Development Setup
 
 ### 1. Clone the repo
@@ -66,13 +111,15 @@ cd SubsTrack
 ```bash
 cd backend
 cp .env.example .env
-# Fill in your Plaid keys and generate an encryption key
+# Fill in your keys — see the Security section for generation commands
 ```
 
-Generate your encryption key:
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
+The following values are **required** — the app or Docker will refuse to start without them:
+- `POSTGRES_PASSWORD` — database password
+- `ENCRYPTION_KEY` — Fernet key for encrypting Plaid tokens
+- `JWT_SECRET` — secret for signing auth tokens
+- `PLAID_CLIENT_ID` / `PLAID_SECRET` — from your Plaid dashboard
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — from Google Cloud Console
 
 ### 3. Start the database
 ```bash
