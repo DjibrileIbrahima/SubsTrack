@@ -1,4 +1,6 @@
 import os
+import logging
+import secrets
 import httpx
 import bcrypt
 from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
@@ -17,6 +19,7 @@ from services.encryption import encrypt
 from services.jwt import create_access_token
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -76,19 +79,29 @@ async def logout(response: Response):
 
 
 @router.get("/google")
-async def google_login():
+async def google_login(response: Response):
+    state = secrets.token_urlsafe(32)
+    response.set_cookie(
+        key="oauth_state", value=state,
+        httponly=True, secure=COOKIE_SECURE,
+        samesite="lax", max_age=300, path="/",
+    )
     params = (
         f"client_id={GOOGLE_CLIENT_ID}"
         f"&redirect_uri={GOOGLE_REDIRECT_URI}"
         f"&response_type=code"
         f"&scope=openid%20email%20profile"
         f"&access_type=offline"
+        f"&state={state}"
     )
     return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
 
 
 @router.get("/google/callback")
-async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
+async def google_callback(code: str, state: str, request: Request, db: AsyncSession = Depends(get_db)):
+    stored_state = request.cookies.get("oauth_state")
+    if not stored_state or not secrets.compare_digest(stored_state, state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
     async with httpx.AsyncClient() as http:
         token_response = await http.post(
             "https://oauth2.googleapis.com/token",
@@ -124,6 +137,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     token = create_access_token(str(user.id))
     response = RedirectResponse(f"{FRONTEND_URL}/")
     set_auth_cookie(response, token)
+    response.delete_cookie(key="oauth_state", path="/")
     return response
 
 class PublicTokenRequest(BaseModel):
@@ -143,8 +157,9 @@ async def create_link_token(current_user: User = Depends(get_current_user)):
         )
         response = client.link_token_create(request)
         return {"link_token": response["link_token"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to create Plaid link token")
+        raise HTTPException(status_code=500, detail="Failed to create link token")
 
 
 @router.post("/exchange-token")
@@ -165,9 +180,10 @@ async def exchange_public_token(
         db.add(account)
         await db.commit()
         return {"message": "Bank account connected successfully!"}
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to exchange Plaid public token")
+        raise HTTPException(status_code=500, detail="Failed to connect bank account")
 
 
 @router.get("/accounts")

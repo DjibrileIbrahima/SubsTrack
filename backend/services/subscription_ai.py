@@ -1,5 +1,8 @@
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """
@@ -41,8 +44,12 @@ def build_candidate_prompt(candidate: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def parse_ai_response(text: str) -> dict[str, Any]:
-    data = json.loads(text)
+def parse_ai_response(text: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("AI returned non-JSON response: %.200s", text)
+        return None
 
     return {
         "is_subscription": bool(data.get("is_subscription", False)),
@@ -82,6 +89,15 @@ def classify_candidate_with_ai(candidate: dict, model_call=None) -> dict:
 
     raw = model_call(SYSTEM_PROMPT, build_candidate_prompt(candidate))
     parsed = parse_ai_response(raw)
+    if parsed is None:
+        return {
+            "is_subscription": False,
+            "normalized_merchant": candidate.get("merchant", ""),
+            "category": candidate.get("category", "Unknown"),
+            "frequency": candidate.get("frequency", "unknown"),
+            "confidence": 0.0,
+            "reason": "AI returned an unparseable response.",
+        }
 
     parsed["confidence"] = max(0.0, min(parsed["confidence"], 0.99))
     if parsed["frequency"] not in {"weekly", "biweekly", "monthly", "quarterly", "yearly", "unknown"}:

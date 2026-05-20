@@ -1,8 +1,9 @@
 import uuid
-from fastapi import APIRouter, HTTPException, Depends
+import logging
+from fastapi import APIRouter, HTTPException, Depends, Query
 from datetime import date, timedelta, datetime
 from typing import Optional, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from plaid.model.transactions_get_request import TransactionsGetRequest
@@ -15,6 +16,7 @@ from services.subscription_pipeline import run_subscription_pipeline
 from services.encryption import decrypt
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def get_access_token(user: User, db: AsyncSession) -> str:
@@ -57,7 +59,7 @@ def serialize_sub(s) -> dict:
 
 @router.get("/transactions")
 async def get_transactions(
-    days: int = 90,
+    days: int = Query(default=90, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -78,8 +80,9 @@ async def get_transactions(
             if isinstance(t.get("date"), date):
                 t["date"] = t["date"].isoformat()
         return {"transactions": txns, "total": len(txns)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch transactions")
+        raise HTTPException(status_code=500, detail="Failed to fetch transactions")
 
 
 @router.get("/subscriptions/saved")
@@ -103,8 +106,9 @@ async def get_saved_subscriptions(
             "total_monthly_spend": round(total_monthly, 2),
             "count": len(serialized),
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch saved subscriptions")
+        raise HTTPException(status_code=500, detail="Failed to fetch subscriptions")
 
 
 @router.get("/subscriptions")
@@ -180,9 +184,10 @@ async def sync_subscriptions(
             "total_monthly_spend": round(total_monthly, 2),
             "count": len(serialized),
         }
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to sync subscriptions")
+        raise HTTPException(status_code=500, detail="Failed to sync subscriptions")
 
 
 @router.get("/summary")
@@ -216,16 +221,17 @@ async def get_spending_summary(
 
         summary = [{"month": k, "total": round(v, 2)} for k, v in sorted(monthly.items())]
         return {"monthly_summary": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch spending summary")
+        raise HTTPException(status_code=500, detail="Failed to fetch spending summary")
 
 
 class ManualSubscriptionRequest(BaseModel):
-    merchant: str
-    amount: float
+    merchant: str = Field(..., min_length=1, max_length=100)
+    amount: float = Field(..., gt=0, le=100_000)
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_expected: Optional[str] = None
-    category: Optional[str] = "Manual"
+    category: Optional[str] = Field(default="Manual", max_length=100)
 
 
 @router.post("/subscriptions/manual")

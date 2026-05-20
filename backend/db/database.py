@@ -10,7 +10,7 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://substrack:substrack_password@localhost:5433/substrack"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=os.getenv("SQL_ECHO", "false").lower() == "true")
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
