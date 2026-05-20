@@ -2,9 +2,6 @@ import os
 import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
-from dotenv import load_dotenv
-
-load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET")
 JWT_ALGORITHM = "HS256"

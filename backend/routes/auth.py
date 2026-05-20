@@ -25,7 +25,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
 def set_auth_cookie(response: Response, token: str) -> None:
@@ -66,7 +66,7 @@ class LoginRequest(BaseModel):
 async def login(response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    if not user or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
+    if not user or not user.hashed_password or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(str(user.id))
     set_auth_cookie(response, token)
