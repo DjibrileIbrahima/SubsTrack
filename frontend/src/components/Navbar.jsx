@@ -10,7 +10,10 @@ export default function Navbar() {
   const navRef = useRef(null)
 
   useEffect(() => {
-    getAlerts().catch(() => setAlerts([]))
+    const load = () => getAlerts().then(setAlerts).catch(() => {})
+    load()
+    const id = setInterval(load, 60_000)
+    return () => clearInterval(id)
   }, [])
 
   // Close dropdowns when clicking outside the navbar
@@ -43,7 +46,7 @@ export default function Navbar() {
         {/* Alerts bell */}
         <button className="bell-btn" onClick={() => { setAlertsOpen(o => !o); setUserOpen(false) }}>
           <BellIcon />
-          {unread > 0 && <span className="badge">{unread}</span>}
+          {unread > 0 && <span className="badge">{unread > 9 ? '9+' : unread}</span>}
         </button>
 
         {alertsOpen && (

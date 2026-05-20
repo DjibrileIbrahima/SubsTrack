@@ -42,3 +42,6 @@ export const getAlerts = () =>
 
 export const markAlertRead = (id) =>
   api.patch(`/alerts/${id}/read`).then(r => r.data)
+
+export const deleteAlert = (id) =>
+  api.delete(`/alerts/${id}`).then(r => r.data)

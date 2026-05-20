@@ -6,7 +6,8 @@ import bcrypt
 from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
 from limiter import limiter
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, EmailStr
+from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
@@ -213,4 +214,34 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "alert_email": current_user.alert_email,
         "alert_sms": current_user.alert_sms,
+        "phone": current_user.phone,
+    }
+
+
+class UpdateMeRequest(BaseModel):
+    alert_email: Optional[bool] = None
+    alert_sms: Optional[bool] = None
+    phone: Optional[str] = Field(default=None, max_length=20)
+
+
+@router.patch("/me")
+async def update_me(
+    body: UpdateMeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if body.alert_email is not None:
+        current_user.alert_email = body.alert_email
+    if body.alert_sms is not None:
+        current_user.alert_sms = body.alert_sms
+    if body.phone is not None:
+        current_user.phone = body.phone
+    await db.commit()
+    await db.refresh(current_user)
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "alert_email": current_user.alert_email,
+        "alert_sms": current_user.alert_sms,
+        "phone": current_user.phone,
     }
