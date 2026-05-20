@@ -9,7 +9,7 @@ const FREQ_COLORS = {
   yearly: '#f59e0b',
 }
 
-export default function SubscriptionList({ subscriptions = [], onRefresh }) {
+export default function SubscriptionList({ subscriptions = [], onRefresh, hasAccounts = false, onSync, syncing = false }) {
   const [deleting, setDeleting] = useState(null)
   const [error, setError] = useState('')
 
@@ -30,8 +30,21 @@ export default function SubscriptionList({ subscriptions = [], onRefresh }) {
   if (!subscriptions.length) {
     return (
       <div className="empty-state">
-        <p>No subscriptions detected yet.</p>
-        <p className="empty-sub">Connect a bank account or add one manually.</p>
+        <p>{hasAccounts ? 'No subscriptions detected yet.' : 'No bank account connected.'}</p>
+        <p className="empty-sub">
+          {hasAccounts
+            ? <>Try syncing your transactions or add a subscription manually.<br />
+                <button
+                  className="btn-ghost"
+                  style={{ marginTop: 12 }}
+                  onClick={onSync}
+                  disabled={syncing}
+                >
+                  {syncing ? 'Syncing...' : '↻ Sync Now'}
+                </button>
+              </>
+            : 'Connect a bank account above to detect subscriptions automatically.'}
+        </p>
       </div>
     )
   }
