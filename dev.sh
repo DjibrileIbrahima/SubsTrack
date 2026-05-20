@@ -47,16 +47,16 @@ if [ ! -f "$VENV/Scripts/python.exe" ] && [ ! -f "$VENV/bin/python" ]; then
     "$SYS_PYTHON" -m venv "$VENV"
 fi
 
-# Pick the right venv paths (Windows vs Unix)
+# Resolve any venv binary correctly on Windows (Scripts/*.exe) or Unix (bin/*)
 if [ -f "$VENV/Scripts/python.exe" ]; then
-    PYTHON="$VENV/Scripts/python.exe"
-    UVICORN="$VENV/Scripts/uvicorn"
-    PIP="$VENV/Scripts/pip"
+    venv_bin() { echo "$VENV/Scripts/$1.exe"; }
 else
-    PYTHON="$VENV/bin/python"
-    UVICORN="$VENV/bin/uvicorn"
-    PIP="$VENV/bin/pip"
+    venv_bin() { echo "$VENV/bin/$1"; }
 fi
+
+PYTHON="$(venv_bin python)"
+UVICORN="$(venv_bin uvicorn)"
+PIP="$(venv_bin pip)"
 
 # ── install / sync requirements ───────────────────────────────────────────────
 
