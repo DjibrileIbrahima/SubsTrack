@@ -25,11 +25,14 @@ def merge_candidate_and_ai(candidate: dict, ai_result: dict) -> dict | None:
 def run_subscription_pipeline(transactions: list[dict], model_call=None) -> list[dict]:
     candidates = detect_subscription_candidates(transactions)
 
+    # When no AI is available, accept on rules alone at a lower threshold.
+    high_threshold = 0.65 if model_call is None else 0.85
+
     accepted = []
     for candidate in candidates:
         rules_conf = candidate["confidence"]
 
-        if rules_conf >= 0.85:
+        if rules_conf >= high_threshold:
             accepted.append({
                 "merchant": candidate["merchant"],
                 "amount": candidate["amount"],
@@ -44,7 +47,7 @@ def run_subscription_pipeline(transactions: list[dict], model_call=None) -> list
             })
             continue
 
-        if rules_conf < 0.55:
+        if model_call is None or rules_conf < 0.55:
             continue
 
         ai_result = classify_candidate_with_ai(candidate, model_call=model_call)

@@ -1,3 +1,4 @@
+import calendar
 from collections import defaultdict
 from datetime import datetime, timedelta, date
 import re
@@ -92,8 +93,15 @@ def normalize_merchant(txn: dict) -> str:
     return raw
 
 
+def _add_months(d: date, months: int) -> date:
+    month = d.month + months
+    year = d.year + (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+
+
 def has_non_subscription_hint(merchant: str) -> bool:
-    return any(hint in merchant for hint in NON_SUBSCRIPTION_HINTS)
+    return any(re.search(r'\b' + re.escape(hint) + r'\b', merchant) for hint in NON_SUBSCRIPTION_HINTS)
 
 
 def has_subscription_keyword(merchant: str) -> bool:
@@ -123,29 +131,34 @@ def interval_consistency_score(intervals: list[int]) -> float:
     if not intervals:
         return 0.0
     avg_interval = sum(intervals) / len(intervals)
+    if avg_interval == 0:
+        return 0.0
     max_deviation = max(abs(i - avg_interval) for i in intervals)
+    rel_dev = max_deviation / avg_interval
 
-    if max_deviation <= 2:
+    if rel_dev <= 0.07:
         return 1.0
-    if max_deviation <= 4:
+    if rel_dev <= 0.15:
         return 0.85
-    if max_deviation <= 7:
+    if rel_dev <= 0.25:
         return 0.65
-    if max_deviation <= 10:
+    if rel_dev <= 0.35:
         return 0.45
     return 0.0
 
 
 def infer_frequency(avg_interval: float) -> str | None:
-    if 25 <= avg_interval <= 35:
-        return "monthly"
-    if 6 <= avg_interval <= 8:
+    if avg_interval <= 0:
+        return None
+    if 5 <= avg_interval < 10:
         return "weekly"
-    if 12 <= avg_interval <= 16:
+    if 10 <= avg_interval < 21:
         return "biweekly"
-    if 85 <= avg_interval <= 98:
+    if 21 <= avg_interval < 41:
+        return "monthly"
+    if 41 <= avg_interval < 106:
         return "quarterly"
-    if 350 <= avg_interval <= 380:
+    if 106 <= avg_interval <= 380:
         return "yearly"
     return None
 
@@ -171,11 +184,18 @@ def build_candidate(merchant: str, txns: list[dict]) -> dict | None:
 
     avg_amount = sum(amounts) / len(amounts)
     last_date = dates[-1]
-    next_date = last_date + timedelta(days=round(avg_interval))
+    if frequency == "monthly":
+        next_date = _add_months(last_date, 1)
+    elif frequency == "quarterly":
+        next_date = _add_months(last_date, 3)
+    elif frequency == "yearly":
+        next_date = _add_months(last_date, 12)
+    else:
+        next_date = last_date + timedelta(days=round(avg_interval))
 
     amount_score = amount_consistency_score(amounts)
     interval_score = interval_consistency_score(intervals)
-    occurrence_score = min(len(txns) / 4, 1.0)
+    occurrence_score = min(len(txns) / 6, 1.0)
 
     keyword_bonus = 0.1 if has_subscription_keyword(merchant) else 0.0
     penalty = 0.25 if has_non_subscription_hint(merchant) else 0.0
@@ -214,6 +234,26 @@ def build_candidate(merchant: str, txns: list[dict]) -> dict | None:
     }
 
 
+def _cluster_by_amount(txns: list[dict]) -> list[list[dict]]:
+    """Split transactions into clusters where amounts are within 20% of each other."""
+    if len(txns) < 2:
+        return [txns] if txns else []
+
+    sorted_txns = sorted(txns, key=lambda x: abs(float(x.get("amount", 0) or 0)))
+    clusters: list[list[dict]] = [[sorted_txns[0]]]
+
+    for txn in sorted_txns[1:]:
+        current_amount = abs(float(txn.get("amount", 0) or 0))
+        last_cluster = clusters[-1]
+        cluster_avg = sum(abs(float(t.get("amount", 0) or 0)) for t in last_cluster) / len(last_cluster)
+        if cluster_avg > 0 and abs(current_amount - cluster_avg) / cluster_avg <= 0.20:
+            last_cluster.append(txn)
+        else:
+            clusters.append([txn])
+
+    return clusters
+
+
 def detect_subscription_candidates(transactions: list[dict]) -> list[dict]:
     merchant_groups = defaultdict(list)
 
@@ -227,9 +267,20 @@ def detect_subscription_candidates(transactions: list[dict]) -> list[dict]:
 
     candidates = []
     for merchant, txns in merchant_groups.items():
-        candidate = build_candidate(merchant, txns)
-        if candidate:
-            candidates.append(candidate)
+        clusters = _cluster_by_amount(txns)
+        if len(clusters) > 1:
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+                avg_amt = sum(abs(float(t.get("amount", 0) or 0)) for t in cluster) / len(cluster)
+                cluster_merchant = f"{merchant} (${avg_amt:.2f})"
+                candidate = build_candidate(cluster_merchant, cluster)
+                if candidate:
+                    candidates.append(candidate)
+        else:
+            candidate = build_candidate(merchant, txns)
+            if candidate:
+                candidates.append(candidate)
 
     candidates.sort(key=lambda x: (-x["confidence"], -x["amount"]))
     return candidates
