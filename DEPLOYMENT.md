@@ -90,6 +90,35 @@ docker compose exec backend python -m alembic upgrade head
 - ARQ worker runs as a separate container, cron jobs are multi-instance safe
 - `POSTGRES_PASSWORD` required at startup — Docker refuses to start without it
 
+## CI / CD (GitHub Actions)
+
+The workflow in `.github/workflows/test.yml` runs automatically on every push:
+
+- **Tests** — runs `pytest` on every push and pull request
+- **Deploy** — SSHs into the server and deploys only on push to `master`, and only if tests pass
+
+### One-time setup: add GitHub secrets
+
+Go to `github.com/YOUR_USERNAME/SubsTrack/settings/secrets/actions` → **New repository secret**:
+
+| Secret | Value |
+|---|---|
+| `SERVER_IP` | Your VPS IP address |
+| `SERVER_USER` | SSH username (e.g. `root` or `ubuntu`) |
+| `SSH_PRIVATE_KEY` | Contents of your private key (`~/.ssh/id_rsa`) |
+
+### One-time setup: prepare the server
+
+Before the first automated deploy, clone the repo and place the `.env` on the server manually:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/SubsTrack.git /opt/substrack
+cp /opt/substrack/backend/.env.example /opt/substrack/backend/.env
+# Fill in all production values
+```
+
+After that, every push to `master` that passes tests will automatically pull, rebuild containers, and run migrations.
+
 ## Ongoing maintenance
 
 **Deploy an update:**
