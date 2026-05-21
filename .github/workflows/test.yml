@@ -44,5 +44,5 @@ jobs:
           script: |
             cd /opt/substrack
             git pull
-            docker compose up --build -d
-            docker compose exec -T backend python -m alembic upgrade head
+            sudo docker-compose up --build -d
+            sudo docker-compose exec -T backend python -m alembic upgrade head
