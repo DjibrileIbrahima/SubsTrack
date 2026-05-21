@@ -18,8 +18,10 @@ cleanup() {
     echo ""
     warn "Shutting down..."
     [ -n "${BACKEND_PID:-}"  ] && kill "$BACKEND_PID"  2>/dev/null || true
+    [ -n "${WORKER_PID:-}"   ] && kill "$WORKER_PID"   2>/dev/null || true
     [ -n "${FRONTEND_PID:-}" ] && kill "$FRONTEND_PID" 2>/dev/null || true
     wait "${BACKEND_PID:-}"  2>/dev/null || true
+    wait "${WORKER_PID:-}"   2>/dev/null || true
     wait "${FRONTEND_PID:-}" 2>/dev/null || true
     echo -e "${GREEN}[dev]${NC} Done."
 }
@@ -97,6 +99,14 @@ cd "$BACKEND"
     | sed $'s/^/\033[0;32m[backend]\033[0m /' &
 BACKEND_PID=$!
 
+# ── start ARQ worker ──────────────────────────────────────────────────────────
+
+log "Starting ARQ worker"
+cd "$BACKEND"
+"$PYTHON" -m arq worker.WorkerSettings 2>&1 \
+    | sed $'s/^/\033[0;35m[worker]\033[0m /' &
+WORKER_PID=$!
+
 # ── start frontend ────────────────────────────────────────────────────────────
 
 log "Starting frontend →  http://localhost:5173"
@@ -114,4 +124,4 @@ echo -e "  API docs →  http://localhost:8000/docs"
 echo -e "  Frontend →  http://localhost:5173"
 echo -e "\nPress ${YELLOW}Ctrl+C${NC} to stop everything.\n"
 
-wait "$BACKEND_PID" "$FRONTEND_PID"
+wait "$BACKEND_PID" "$WORKER_PID" "$FRONTEND_PID"

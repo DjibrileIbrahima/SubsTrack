@@ -2,7 +2,7 @@ fastapi
 uvicorn
 plaid-python
 python-dotenv
-apscheduler
+arq
 sqlalchemy[asyncio]
 asyncpg
 alembic

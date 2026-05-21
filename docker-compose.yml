@@ -46,6 +46,21 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-substrack}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-substrack}
       REDIS_URL: redis://redis:6379
 
+  worker:
+    build: ./backend
+    container_name: substrack_worker
+    restart: unless-stopped
+    command: python -m arq worker.WorkerSettings
+    env_file: ./backend/.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-substrack}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-substrack}
+      REDIS_URL: redis://redis:6379
+
   frontend:
     build: ./frontend
     container_name: substrack_frontend
