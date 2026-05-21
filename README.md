@@ -255,6 +255,12 @@ taskkill /F /IM python.exe   # kills any lingering ARQ worker
 ```
 Then restart with `bash dev.sh`.
 
+### `RuntimeError: JWT_SECRET is not set` on startup
+
+**Cause:** Running `uvicorn main:app` directly from a directory other than `backend/`, or from a shell that hasn't loaded `.env`. The app calls `load_dotenv()` before any imports, so it needs to find `backend/.env` in the working directory.
+
+**Fix:** Always start via `bash dev.sh`, or `cd backend` first if running uvicorn manually.
+
 ---
 
 ## Plaid Sandbox Credentials
