@@ -122,6 +122,8 @@ Log out and reconnect, then verify:
 echo $POSTGRES_PASSWORD
 ```
 
+> **Better alternative:** Use AWS Parameter Store to store secrets securely instead of keeping them in `.env` files. See the [Parameter Store section](#12-aws-parameter-store-recommended) below.
+
 ---
 
 ## 8. Build and start containers
@@ -216,6 +218,111 @@ git pull
 sudo docker-compose up --build -d
 sudo docker-compose exec -T backend python -m alembic upgrade head
 ```
+
+---
+
+## 12. AWS Parameter Store (recommended)
+
+Storing secrets in `.env` on disk is convenient but not ideal. Parameter Store keeps them encrypted in AWS and your EC2 instance fetches them at deploy time — nothing sensitive is hardcoded anywhere.
+
+### Store secrets in Parameter Store
+
+- AWS Console → search **Systems Manager** → **Parameter Store** → **Create parameter**
+- For each secret:
+  - **Name:** `/substrack/SECRET_NAME` (e.g. `/substrack/POSTGRES_PASSWORD`)
+  - **Tier:** Standard (free)
+  - **Type:** `SecureString`
+  - **Value:** the actual secret value
+
+Create one parameter for each:
+```
+/substrack/POSTGRES_PASSWORD
+/substrack/ENCRYPTION_KEY
+/substrack/JWT_SECRET
+/substrack/PLAID_CLIENT_ID
+/substrack/PLAID_SECRET
+/substrack/GOOGLE_CLIENT_ID
+/substrack/GOOGLE_CLIENT_SECRET
+/substrack/RESEND_API_KEY
+```
+
+### Create an IAM role for your EC2 instance
+
+- AWS Console → **IAM → Roles → Create role**
+- Trusted entity: **AWS service** → **EC2** → Next
+- Attach policy: **AmazonSSMReadOnlyAccess** → Next
+- Role name: `substrack-ec2-role` → **Create role**
+
+Attach it to your instance:
+- EC2 → Instances → select instance → **Actions → Security → Modify IAM role**
+- Select `substrack-ec2-role` → **Update IAM role**
+
+### Create the secrets loader script on the server
+
+```bash
+sudo nano /opt/substrack/load-secrets.sh
+```
+
+Paste this (update `REGION` to match your EC2 region):
+
+```bash
+#!/bin/bash
+REGION="us-east-1"
+ENV_FILE="/opt/substrack/backend/.env"
+
+fetch() {
+    aws ssm get-parameter \
+        --name "/substrack/$1" \
+        --with-decryption \
+        --query "Parameter.Value" \
+        --output text \
+        --region $REGION
+}
+
+cat > $ENV_FILE <<EOF
+PLAID_CLIENT_ID=$(fetch PLAID_CLIENT_ID)
+PLAID_SECRET=$(fetch PLAID_SECRET)
+PLAID_ENV=sandbox
+
+POSTGRES_PASSWORD=$(fetch POSTGRES_PASSWORD)
+DATABASE_URL=postgresql+asyncpg://substrack:$(fetch POSTGRES_PASSWORD)@db:5432/substrack
+
+ENCRYPTION_KEY=$(fetch ENCRYPTION_KEY)
+JWT_SECRET=$(fetch JWT_SECRET)
+
+GOOGLE_CLIENT_ID=$(fetch GOOGLE_CLIENT_ID)
+GOOGLE_CLIENT_SECRET=$(fetch GOOGLE_CLIENT_SECRET)
+GOOGLE_REDIRECT_URI=http://YOUR_ELASTIC_IP/api/auth/google/callback
+
+FRONTEND_URL=http://YOUR_ELASTIC_IP
+CORS_ORIGINS=http://YOUR_ELASTIC_IP
+
+COOKIE_SECURE=false
+REDIS_URL=redis://redis:6379
+EOF
+
+echo "Secrets loaded into $ENV_FILE"
+```
+
+```bash
+sudo chmod +x /opt/substrack/load-secrets.sh
+```
+
+Test it:
+```bash
+sudo /opt/substrack/load-secrets.sh
+cat /opt/substrack/backend/.env
+```
+
+### Remove the old `/etc/environment` entry
+
+```bash
+sudo nano /etc/environment  # remove the POSTGRES_PASSWORD line
+```
+
+### How it fits into the deploy workflow
+
+The GitHub Actions deploy script already runs `load-secrets.sh` before starting containers — secrets are fetched fresh on every deploy. No secrets ever live in git or hardcoded on disk permanently.
 
 ---
 
