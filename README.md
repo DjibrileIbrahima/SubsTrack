@@ -84,6 +84,14 @@ SubsTrack/
 - Subscription pipeline with confidence scoring and frequency inference (weekly/biweekly/monthly/quarterly/yearly)
 - Source badge (Bank vs Manual) and detection metadata
 
+#### Detection pipeline details
+- **Amount clustering** — multi-product merchants (e.g. Apple Music vs Apple TV+) are split into separate subscriptions based on amount proximity rather than grouped as one noisy entry
+- **Calendar-aware renewal dates** — monthly/quarterly/yearly `next_expected` uses proper month arithmetic (Jan 31 + 1 month = Feb 28, not Mar 2)
+- **Relative interval scoring** — consistency thresholds scale with the billing interval, so a ±2-day drift on a yearly subscription isn't penalised the same as on a weekly one
+- **Continuous frequency ranges** — no dead zones; a 45-day average interval maps to quarterly rather than being discarded
+- **Word-boundary hint matching** — merchants like "Gaston Bistro" or "Watercolor App" are no longer falsely penalised by the GAS/WATER non-subscription filter
+- **Rules-only acceptance at 0.65** — when no AI model is configured, candidates above 0.65 confidence are accepted directly instead of being silently dropped
+
 ### Alerts
 - In-app alerts with unread badge in navbar
 - Alerts generated automatically daily via **ARQ** worker (Redis-backed, multi-instance safe) and on-demand via API
