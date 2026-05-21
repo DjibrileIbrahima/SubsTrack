@@ -1,9 +1,7 @@
-version: "3.8"
-
-# Production mode — runs all 3 services in containers
+# Production mode — runs all 5 services in containers
 #
 # Usage:
-#   docker compose up --build
+#   docker-compose up --build
 
 services:
   db:
