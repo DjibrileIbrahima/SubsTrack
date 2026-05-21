@@ -279,9 +279,80 @@ When testing with Plaid Link, use:
 ---
 
 ## Production Deployment
+
+### 1. Provision a server
+- A Linux VPS (DigitalOcean, Hetzner, AWS EC2, etc.) with **Docker** and **Docker Compose** installed
+- Point your domain's DNS **A record** to the server IP
+
+### 2. Clone the repo and set up environment
 ```bash
-docker compose up --build
+git clone https://github.com/YOUR_USERNAME/SubsTrack.git
+cd SubsTrack
+cp backend/.env.example backend/.env
+# Fill in all production values — see table below
 ```
+
+#### Required `.env` changes for production
+
+| Variable | What to set |
+|---|---|
+| `PLAID_ENV` | `sandbox` (keep for now) or `production` once Plaid-approved |
+| `PLAID_SECRET` | Your Plaid secret for the chosen environment |
+| `POSTGRES_PASSWORD` | Strong random password |
+| `ENCRYPTION_KEY` | Fresh key — never reuse a dev key |
+| `JWT_SECRET` | Fresh secret — never reuse a dev secret |
+| `COOKIE_SECURE` | `true` |
+| `CORS_ORIGINS` | `https://yourdomain.com` |
+| `FRONTEND_URL` | `https://yourdomain.com` |
+| `GOOGLE_REDIRECT_URI` | `https://yourdomain.com/api/auth/google/callback` |
+| `RESEND_API_KEY` | Your Resend key |
+| `ALERT_FROM_EMAIL` | A verified sender domain in Resend |
+
+### 3. Add SSL (HTTPS) — required before launch
+
+The nginx container currently listens on port 80 only. Add HTTPS with one of these approaches:
+
+**Option A — Certbot on the host (recommended):**
+1. Install Certbot: `sudo apt install certbot python3-certbot-nginx`
+2. Update `frontend/nginx.conf` to add a port 443 server block and redirect 80 → 443
+3. Mount the cert files into the frontend container via `docker-compose.yml`
+
+**Option B — Cloudflare proxy (easiest):**
+1. Add your domain to Cloudflare (free plan works)
+2. Set DNS A record to your server IP with **Proxy** enabled (orange cloud)
+3. In Cloudflare SSL/TLS settings, set mode to **Full (strict)**
+4. Cloudflare handles HTTPS termination; nginx receives HTTP internally
+
+### 4. Configure Google OAuth
+- Go to [console.cloud.google.com](https://console.cloud.google.com) → use your personal Google account → create a **new project** for SubsTrack
+- Enable the **Google+ API** (or "Google Identity")
+- Under **Credentials → OAuth 2.0 Client IDs**, add:
+  - Authorized redirect URI: `https://yourdomain.com/api/auth/google/callback`
+  - Authorized JavaScript origin: `https://yourdomain.com`
+
+### 5. Start everything
+```bash
+docker compose up --build -d
+```
+
+### 6. Run database migrations (first deploy only)
+```bash
+docker compose exec backend python -m alembic upgrade head
+```
+
+### 7. Verify
+- Frontend loads at `https://yourdomain.com`
+- API docs at `https://yourdomain.com/api/docs`
+- Register an account, connect Plaid sandbox, sync subscriptions
+
+### What's already production-ready
+- Security headers in nginx (X-Frame-Options, CSP, Referrer-Policy, etc.)
+- HttpOnly + SameSite=lax auth cookies with `COOKIE_SECURE=true`
+- Plaid access tokens encrypted at rest (Fernet AES-128)
+- Backend port not exposed externally — all traffic through nginx
+- Rate limiting shared across instances via Redis
+- ARQ worker runs as a separate container, cron jobs are multi-instance safe
+- `POSTGRES_PASSWORD` required at startup — Docker refuses to start without it
 
 ---
 
