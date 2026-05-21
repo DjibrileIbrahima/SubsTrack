@@ -297,3 +297,4 @@ docker compose up --build -d
 - [x] Phase 6 — Dashboard Polish (annual spend, due-soon section, category chart, empty states)
 - [ ] Phase 7 — Deployment (production Docker, CI/CD)
 - [ ] Phase 8 — Auth + Monetization
+- [ ] Redis response caching for `/api/transactions` and `/api/summary` (10-min TTL — both hit Plaid on every request)
