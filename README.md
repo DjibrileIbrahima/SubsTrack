@@ -3,37 +3,47 @@
 A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 
 ## Tech Stack
-- **Backend:** FastAPI + SQLAlchemy (async) + Alembic
+- **Backend:** FastAPI + SQLAlchemy (async) + Alembic + APScheduler
 - **Frontend:** React + Vite + Recharts
 - **Database:** PostgreSQL (Docker)
 - **Cache / Rate limiting:** Redis (Docker)
 - **Banking:** Plaid API (Sandbox)
+- **Email alerts:** Resend API
 
 ## Project Structure
 ```
 SubsTrack/
-├── docker-compose.yml         # Production (all 4 containers)
-├── docker-compose.dev.yml     # Development (DB + Redis)
+├── dev.sh                         # One-command dev launcher (backend + frontend)
+├── docker-compose.yml             # Production (all containers)
+├── docker-compose.dev.yml         # Development (DB + Redis only)
 ├── .gitignore
 ├── backend/
 │   ├── Dockerfile
 │   ├── main.py
 │   ├── plaid_client.py
+│   ├── limiter.py                 # Shared slowapi/Redis rate limiter
 │   ├── requirements.txt
 │   ├── alembic.ini
 │   ├── .env.example
 │   ├── db/
 │   │   ├── database.py
-│   │   └── models.py
+│   │   ├── models.py
+│   │   └── deps.py
 │   ├── routes/
-│   │   ├── auth.py
-│   │   └── transactions.py
+│   │   ├── auth.py                # Register, login, Google OAuth, Plaid link
+│   │   ├── transactions.py        # Transactions, subscriptions, manual CRUD
+│   │   └── alerts.py             # In-app alerts CRUD + manual trigger
 │   ├── services/
-│   │   ├── encryption.py
-│   │   └── subscription_detector.py
+│   │   ├── encryption.py          # Fernet encryption for Plaid tokens
+│   │   ├── subscription_detector.py
+│   │   ├── subscription_pipeline.py
+│   │   ├── alert_service.py       # Alert generation + email dispatch
+│   │   └── email.py              # Resend API integration
+│   ├── tests/
+│   │   ├── test_subscription_detector.py
+│   │   └── test_alerts.sh
 │   └── alembic/
 │       ├── env.py
-│       ├── script.py.mako
 │       └── versions/
 └── frontend/
     ├── Dockerfile
@@ -47,17 +57,46 @@ SubsTrack/
         ├── index.css
         ├── api/index.js
         ├── hooks/usePlaid.js
-        ├── pages/Dashboard.jsx
+        ├── pages/
+        │   ├── Dashboard.jsx
+        │   ├── Login.jsx
+        │   └── Register.jsx
         └── components/
-            ├── Navbar.jsx
+            ├── Navbar.jsx          # Bell icon, unread alert badge, user menu
             ├── SubscriptionList.jsx
             ├── AddManualForm.jsx
-            └── SpendingChart.jsx
+            ├── SpendingChart.jsx   # Monthly bar chart
+            └── CategoryChart.jsx   # Spend by category (horizontal bars)
 ```
 
-## Security
+## Features
 
-The following controls are in place across the stack.
+### Dashboard
+- **Stat cards** — Monthly Spend, Annual Estimate (all frequencies), Subscription count
+- **Monthly spending chart** — bar chart of transaction spend over time
+- **Category breakdown** — horizontal bar chart, monthly equivalent per category
+- **Due Soon** — subscriptions renewing within 7 days, urgent highlighting for today/tomorrow
+- **Manual subscriptions** — add, list, and delete without a bank connection
+
+### Subscriptions
+- Plaid bank link to auto-detect recurring charges
+- Subscription pipeline with confidence scoring and frequency inference (weekly/biweekly/monthly/quarterly/yearly)
+- Source badge (Bank vs Manual) and detection metadata
+
+### Alerts
+- In-app alerts with unread badge in navbar
+- Alerts generated automatically every 24 hours (APScheduler) and on-demand via API
+- Email alerts via Resend when subscriptions are due within 7 days
+- Per-user opt-in for email alerts (`alert_email` preference)
+
+### Auth
+- Email/password registration and login (bcrypt)
+- Google OAuth 2.0
+- HttpOnly cookie sessions (7-day expiry)
+
+---
+
+## Security
 
 ### Authentication & sessions
 - Passwords hashed with **bcrypt**
@@ -75,22 +114,27 @@ The following controls are in place across the stack.
   - `Content-Security-Policy` — whitelists sources, blocks inline scripts and object embeds
   - `Permissions-Policy` — disables camera, microphone, and geolocation
   - `server_tokens off` — hides nginx version
-- CORS restricted to origins in `CORS_ORIGINS` with an explicit header whitelist (`Content-Type`, `Authorization`, `X-Requested-With`)
+- CORS restricted to origins in `CORS_ORIGINS` with an explicit header whitelist
 
 ### Data protection
 - Plaid `access_token` values encrypted at rest with **Fernet** (AES-128-CBC + HMAC-SHA256); key loaded from `ENCRYPTION_KEY` env var — app refuses to start if unset
 - Backend API port **not** exposed in Docker — all external traffic goes through nginx
 
 ### Rate limiting
-- `POST /api/auth/login` — **10 requests/minute** per IP
-- `POST /api/auth/register` — **5 requests/minute** per IP
-- Enforced by **slowapi** backed by **Redis**, so limits are shared across all backend instances and survive restarts
-- Exceeding the limit returns `429 Too Many Requests`
-- `REDIS_URL` defaults to `redis://localhost:6379`; set to `redis://redis:6379` in production Docker (handled automatically by `docker-compose.yml`)
+| Endpoint | Limit |
+|---|---|
+| `POST /api/auth/register` | 5 req/min |
+| `POST /api/auth/login` | 10 req/min |
+| `POST /api/auth/link-token` | 20 req/min |
+| `POST /api/auth/exchange-token` | 10 req/min |
+| `POST /api/subscriptions/manual` | 30 req/min |
+| `POST /api/alerts/generate` | 5 req/min |
+
+Enforced by **slowapi** backed by **Redis** — limits are shared across instances and survive restarts.
 
 ### Input validation
 - All query parameters validated by FastAPI/Pydantic — e.g. `?days` clamped to 1–365
-- Manual subscription fields validated: merchant length 1–100, amount > 0 and ≤ 100,000, category length ≤ 100
+- Manual subscription fields validated: merchant 1–100 chars, amount > 0 and ≤ 100,000, category ≤ 100 chars
 - 500 handlers return generic messages; full errors logged server-side only
 
 ### Secrets management
@@ -117,92 +161,96 @@ cd SubsTrack
 
 ### 2. Set up environment variables
 ```bash
-cd backend
-cp .env.example .env
+cp backend/.env.example backend/.env
 # Fill in your keys — see the Security section for generation commands
 ```
 
 The following values are **required** — the app or Docker will refuse to start without them:
-- `POSTGRES_PASSWORD` — database password
-- `ENCRYPTION_KEY` — Fernet key for encrypting Plaid tokens
-- `JWT_SECRET` — secret for signing auth tokens
-- `PLAID_CLIENT_ID` / `PLAID_SECRET` — from your Plaid dashboard
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — from Google Cloud Console
-- `REDIS_URL` — defaults to `redis://localhost:6379` (dev compose provides Redis automatically)
 
-### 3. Start the database and Redis
+| Variable | Description |
+|---|---|
+| `POSTGRES_PASSWORD` | Database password |
+| `ENCRYPTION_KEY` | Fernet key for encrypting Plaid tokens |
+| `JWT_SECRET` | Secret for signing auth tokens |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` | From your Plaid dashboard |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | From Google Cloud Console |
+| `REDIS_URL` | Defaults to `redis://localhost:6379` |
+
+Optional:
+
+| Variable | Description |
+|---|---|
+| `RESEND_API_KEY` | Resend API key for email alerts (alerts still work in-app without this) |
+| `ALERT_FROM_EMAIL` | Sender address for alert emails (defaults to `alerts@yourdomain.com`) |
+| `COOKIE_SECURE` | Set to `false` for local dev without HTTPS |
+
+### 3. Start everything
 ```bash
-# From root SubsTrack/ folder — starts PostgreSQL and Redis
-docker compose -f docker-compose.dev.yml --env-file backend/.env up -d
+bash dev.sh
 ```
 
-### 4. Run backend
-```bash
-cd backend
-pip install -r requirements.txt
-alembic revision --autogenerate -m "initial tables"
-alembic upgrade head
-uvicorn main:app --reload
-```
-API runs at http://localhost:8000
-API docs at http://localhost:8000/docs
+`dev.sh` handles the full startup sequence automatically:
+- Creates a Python virtual environment (`.venv`) if one doesn't exist
+- Installs/syncs `backend/requirements.txt`
+- Starts Docker containers (PostgreSQL + Redis)
+- Waits for Postgres to be ready
+- Starts the FastAPI backend with hot reload
+- Starts the Vite frontend dev server
+- `Ctrl+C` cleanly shuts down all processes
 
-### 5. Run frontend
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:5173 |
+| Backend API | http://localhost:8000 |
+| API docs (Swagger) | http://localhost:8000/docs |
+
+### Running tests
 ```bash
-cd frontend
-npm install
-npm run dev
+# Unit tests (subscription detector — no server needed)
+.venv/Scripts/python.exe -m pytest backend/tests/test_subscription_detector.py -v
+
+# API smoke tests (requires running server)
+bash backend/tests/test_alerts.sh
 ```
-App runs at http://localhost:5173
+
+---
 
 ## Troubleshooting
 
-### PostgreSQL port conflict (`password authentication failed` or connection refused)
+### PostgreSQL port conflict
 
-**Symptom:** The backend starts but every API request returns `500 Internal Server Error`. The logs show:
+**Symptom:** Backend starts but every request returns `500`. Logs show:
 ```
 asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "substrack"
 ```
-or
-```
-asyncpg.exceptions.ConnectionRefusedError: connection refused
-```
 
-**Cause:** A locally installed PostgreSQL service is already listening on port 5432 (and sometimes 5433 as well). When the backend connects to `localhost:5432`, the OS routes the connection to the local Postgres rather than the Docker container, and the `substrack` user does not exist there.
+**Cause:** A locally installed PostgreSQL is already on port 5432, intercepting the Docker container's connections.
 
-**How to confirm:**
-```bash
-# Windows — shows PIDs on port 5432
-netstat -ano | findstr ":5432"
-
-# Then check the owning process
-tasklist /FI "PID eq <pid>"
-```
-If you see a `postgres.exe` process that is *not* `com.docker.backend`, a local installation is conflicting.
-
-**Fix — option 1 (recommended): disable the local Postgres service**
+**Fix — option 1 (recommended): disable the local service**
 ```powershell
-# Stop the service and prevent it starting at boot
 Stop-Service postgresql*
 Set-Service -Name postgresql* -StartupType Disabled
 ```
-Then restart the Docker DB container and the backend — port 5432 is now exclusively owned by Docker.
 
 **Fix — option 2: remap Docker to a free port**
 
-Find a free port (e.g. 5434):
-```bash
-netstat -ano | findstr ":5434"   # should return nothing
-```
-Then edit `docker-compose.dev.yml`:
+In `docker-compose.dev.yml`:
 ```yaml
 ports:
   - "5434:5432"
 ```
-And update `DATABASE_URL` in `backend/.env`:
+And in `backend/.env`:
 ```
 DATABASE_URL=postgresql+asyncpg://substrack:substrack_password@localhost:5434/substrack
 ```
+
+### Stale backend process
+
+If the backend starts but Plaid calls fail with credential errors, a stale process from before `.env` was populated may still be running:
+```powershell
+taskkill /F /IM uvicorn.exe
+```
+Then restart with `bash dev.sh`.
 
 ---
 
@@ -211,18 +259,21 @@ When testing with Plaid Link, use:
 - **Username:** `user_good`
 - **Password:** `pass_good`
 
+---
+
 ## Production Deployment
 ```bash
-# Build and run all 3 containers
 docker compose up --build
 ```
 
+---
+
 ## Roadmap
-- [x] Phase 1 — Foundation
-- [x] Phase 2 — Backend Core
-- [x] Phase 3 — Plaid Integration
-- [x] Phase 4 — React Frontend
-- [ ] Phase 5 — Alerts (in-app, email, SMS)
-- [ ] Phase 6 — Polish + AI features
-- [ ] Phase 7 — Deployment
+- [x] Phase 1 — Foundation (project structure, Docker, DB schema)
+- [x] Phase 2 — Backend Core (auth, JWT, Plaid integration)
+- [x] Phase 3 — Subscription Detection (pipeline, frequency inference, confidence scoring)
+- [x] Phase 4 — React Frontend (dashboard, Plaid Link, manual subscriptions)
+- [x] Phase 5 — Alerts (in-app alerts, email via Resend, scheduled jobs, navbar badge)
+- [x] Phase 6 — Dashboard Polish (annual spend, due-soon section, category chart, empty states)
+- [ ] Phase 7 — Deployment (production Docker, CI/CD)
 - [ ] Phase 8 — Auth + Monetization
