@@ -3,7 +3,7 @@
 A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 
 ## Tech Stack
-- **Backend:** FastAPI + SQLAlchemy (async) + Alembic + APScheduler
+- **Backend:** FastAPI + SQLAlchemy (async) + Alembic + ARQ
 - **Frontend:** React + Vite + Recharts
 - **Database:** PostgreSQL (Docker)
 - **Cache / Rate limiting:** Redis (Docker)
@@ -13,7 +13,7 @@ A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 ## Project Structure
 ```
 SubsTrack/
-├── dev.sh                         # One-command dev launcher (backend + frontend)
+├── dev.sh                         # One-command dev launcher (backend + worker + frontend)
 ├── docker-compose.yml             # Production (all containers)
 ├── docker-compose.dev.yml         # Development (DB + Redis only)
 ├── .gitignore
@@ -22,6 +22,7 @@ SubsTrack/
 │   ├── main.py
 │   ├── plaid_client.py
 │   ├── limiter.py                 # Shared slowapi/Redis rate limiter
+│   ├── worker.py                  # ARQ WorkerSettings + cron job (alert generation)
 │   ├── requirements.txt
 │   ├── alembic.ini
 │   ├── .env.example
@@ -85,7 +86,7 @@ SubsTrack/
 
 ### Alerts
 - In-app alerts with unread badge in navbar
-- Alerts generated automatically every 24 hours (APScheduler) and on-demand via API
+- Alerts generated automatically daily via **ARQ** worker (Redis-backed, multi-instance safe) and on-demand via API
 - Email alerts via Resend when subscriptions are due within 7 days
 - Per-user opt-in for email alerts (`alert_email` preference)
 
@@ -195,8 +196,9 @@ bash dev.sh
 - Starts Docker containers (PostgreSQL + Redis)
 - Waits for Postgres to be ready
 - Starts the FastAPI backend with hot reload
+- Starts the ARQ worker (runs cron jobs, purple `[worker]` log prefix)
 - Starts the Vite frontend dev server
-- `Ctrl+C` cleanly shuts down all processes
+- `Ctrl+C` cleanly shuts down all three processes
 
 | Service | URL |
 |---|---|
@@ -244,11 +246,12 @@ And in `backend/.env`:
 DATABASE_URL=postgresql+asyncpg://substrack:substrack_password@localhost:5434/substrack
 ```
 
-### Stale backend process
+### Stale backend or worker process
 
 If the backend starts but Plaid calls fail with credential errors, a stale process from before `.env` was populated may still be running:
 ```powershell
 taskkill /F /IM uvicorn.exe
+taskkill /F /IM python.exe   # kills any lingering ARQ worker
 ```
 Then restart with `bash dev.sh`.
 
