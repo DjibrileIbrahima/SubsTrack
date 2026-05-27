@@ -17,6 +17,7 @@ from limiter import limiter
 from routes.auth import router as auth_router
 from routes.transactions import router as transactions_router
 from routes.alerts import router as alerts_router
+from routes.webhooks import router as webhooks_router
 
 app = FastAPI(title="SubsTrack API", version="1.0.0")
 app.state.limiter = limiter
@@ -36,6 +37,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(transactions_router, prefix="/api", tags=["Transactions"])
 app.include_router(alerts_router, prefix="/api", tags=["Alerts"])
+app.include_router(webhooks_router, prefix="/api/webhooks", tags=["Webhooks"])
 
 
 @app.get("/")

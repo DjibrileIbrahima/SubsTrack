@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["migrations/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "UP007",  # X | Y union syntax (kept for readability in older-style hints)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["db", "routes", "services"]
