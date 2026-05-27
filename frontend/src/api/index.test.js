@@ -37,6 +37,7 @@ import api, {
   getLinkToken,
   exchangeToken,
   getAccounts,
+  updateMe,
   getSavedSubscriptions,
   syncSubscriptions,
   addManualSubscription,
@@ -160,5 +161,23 @@ describe('deleteAlert', () => {
     mockInstance.delete.mockResolvedValue({ data: { message: 'deleted' } })
     await deleteAlert('alert-id-1')
     expect(mockInstance.delete).toHaveBeenCalledWith('/alerts/alert-id-1')
+  })
+})
+
+describe('updateMe', () => {
+  it('calls PATCH /auth/me with payload and returns full user object', async () => {
+    const payload = { alert_email: true, alert_sms: false, phone: null }
+    const response = { email: 'user@example.com', alert_email: true, alert_sms: false, phone: null }
+    mockInstance.patch.mockResolvedValue({ data: response })
+    const result = await updateMe(payload)
+    expect(mockInstance.patch).toHaveBeenCalledWith('/auth/me', payload)
+    expect(result).toEqual(response)
+  })
+
+  it('passes phone number when provided', async () => {
+    const payload = { alert_sms: true, phone: '+15550001234' }
+    mockInstance.patch.mockResolvedValue({ data: { ...payload } })
+    await updateMe(payload)
+    expect(mockInstance.patch).toHaveBeenCalledWith('/auth/me', payload)
   })
 })

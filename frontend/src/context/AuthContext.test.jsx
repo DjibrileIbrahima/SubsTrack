@@ -42,6 +42,12 @@ function AuthActions() {
   )
 }
 
+// Helper: a component that calls updateUser
+function UpdateUserAction({ newUser }) {
+  const { updateUser } = useAuth()
+  return <button onClick={() => updateUser(newUser)}>update</button>
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('AuthProvider', () => {
@@ -130,6 +136,31 @@ describe('AuthProvider', () => {
       expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
     })
     expect(api.post).toHaveBeenCalledWith('/auth/logout')
+  })
+
+  it('updateUser() replaces user state without an API call', async () => {
+    api.get.mockResolvedValue({ data: { email: 'original@example.com' } })
+
+    const updated = { email: 'updated@example.com', alert_email: true }
+
+    render(
+      <AuthProvider>
+        <AuthConsumer />
+        <UpdateUserAction newUser={updated} />
+      </AuthProvider>
+    )
+
+    await waitFor(() =>
+      expect(screen.getByTestId('email')).toHaveTextContent('original@example.com')
+    )
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'update' }).click()
+    })
+
+    expect(screen.getByTestId('email')).toHaveTextContent('updated@example.com')
+    // updateUser should not trigger any extra API calls beyond the initial /me
+    expect(api.get).toHaveBeenCalledTimes(1)
   })
 
   it('logout() still clears user even if API call fails', async () => {
