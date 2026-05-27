@@ -1,11 +1,10 @@
 """Tests for rate limiter configuration and 429 error handling."""
 
-import pytest
+from unittest.mock import MagicMock
+
 from fastapi import Request
-from fastapi.testclient import TestClient
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from unittest.mock import MagicMock
 
 
 class TestLimiterConfig:
