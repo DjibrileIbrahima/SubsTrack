@@ -51,6 +51,10 @@ def parse_ai_response(text: str) -> dict[str, Any] | None:
         logger.warning("AI returned non-JSON response: %.200s", text)
         return None
 
+    if not isinstance(data, dict):
+        logger.warning("AI returned non-object JSON (got %s): %.200s", type(data).__name__, text)
+        return None
+
     return {
         "is_subscription": bool(data.get("is_subscription", False)),
         "normalized_merchant": str(data.get("normalized_merchant") or "").strip(),

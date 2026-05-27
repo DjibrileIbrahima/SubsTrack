@@ -120,7 +120,7 @@ class TestInferFrequency:
     def test_biweekly(self):          assert infer_frequency(14) == "biweekly"
     def test_quarterly(self):         assert infer_frequency(91) == "quarterly"
     def test_yearly(self):            assert infer_frequency(365) == "yearly"
-    def test_unknown_returns_none(self): assert infer_frequency(45) == "quarterly"
+    def test_midrange_days_maps_to_quarterly(self): assert infer_frequency(45) == "quarterly"
     def test_zero_returns_none(self): assert infer_frequency(0) is None
 
 

@@ -55,7 +55,7 @@ export default function AddManualForm({ onAdded }) {
   }
 
   return (
-    <form className="manual-form" onSubmit={handleSubmit}>
+    <form className="manual-form" onSubmit={handleSubmit} noValidate>
       <h3 className="form-title">Add Manually</h3>
 
       {error && <p className="form-error">{error}</p>}
@@ -74,7 +74,6 @@ export default function AddManualForm({ onAdded }) {
           placeholder="Amount (e.g. 15.99)"
           type="number"
           step="0.01"
-          min="0.01"
           value={form.amount}
           onChange={set('amount')}
           disabled={loading}
