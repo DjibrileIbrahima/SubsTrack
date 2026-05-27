@@ -1,5 +1,6 @@
-import os
 import logging
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv()  # must run before any local imports that read env vars at import time
@@ -9,15 +10,16 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from limiter import limiter
-from routes.auth import router as auth_router
-from routes.transactions import router as transactions_router
-from routes.alerts import router as alerts_router
-from routes.webhooks import router as webhooks_router
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from slowapi import _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+
+from limiter import limiter  # noqa: E402
+from routes.alerts import router as alerts_router  # noqa: E402
+from routes.auth import router as auth_router  # noqa: E402
+from routes.transactions import router as transactions_router  # noqa: E402
+from routes.webhooks import router as webhooks_router  # noqa: E402
 
 app = FastAPI(title="SubsTrack API", version="1.0.0")
 app.state.limiter = limiter

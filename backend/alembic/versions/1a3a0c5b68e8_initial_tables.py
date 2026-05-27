@@ -1,14 +1,16 @@
 """initial tables
 
 Revision ID: 1a3a0c5b68e8
-Revises: 
+Revises:
 Create Date: 2026-03-31 14:28:46.357267
 
 """
-from typing import Sequence, Union
-from alembic import op
+from collections.abc import Sequence
+from typing import Union
+
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = '1a3a0c5b68e8'
 down_revision: Union[str, None] = None

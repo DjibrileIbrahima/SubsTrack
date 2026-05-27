@@ -1,20 +1,22 @@
-import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Query, Request
-from datetime import date, timedelta, datetime
-from typing import Optional, Literal
-from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+import uuid
+from datetime import date, datetime, timedelta
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
-from plaid_client import client
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.database import get_db
-from db.models import LinkedAccount, Subscription, User
 from db.deps import get_current_user
-from services.subscription_pipeline import run_subscription_pipeline
-from services.encryption import decrypt
+from db.models import LinkedAccount, Subscription, User
 from limiter import limiter
+from plaid_client import client
+from services.encryption import decrypt
+from services.subscription_pipeline import run_subscription_pipeline
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -96,7 +98,7 @@ async def get_saved_subscriptions(
         result = await db.execute(
             select(Subscription).where(
                 Subscription.user_id == current_user.id,
-                Subscription.is_active == True
+                Subscription.is_active == True  # noqa: E712
             )
         )
         subs = result.scalars().all()
@@ -173,7 +175,7 @@ async def sync_subscriptions(
         result = await db.execute(
             select(Subscription).where(
                 Subscription.user_id == current_user.id,
-                Subscription.is_active == True,
+                Subscription.is_active == True,  # noqa: E712
             )
         )
         subs = result.scalars().all()
@@ -231,8 +233,8 @@ class ManualSubscriptionRequest(BaseModel):
     merchant: str = Field(..., min_length=1, max_length=100)
     amount: float = Field(..., gt=0, le=100_000)
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
-    next_expected: Optional[str] = None
-    category: Optional[str] = Field(default="Manual", max_length=100)
+    next_expected: str | None = None
+    category: str | None = Field(default="Manual", max_length=100)
 
 
 @router.post("/subscriptions/manual")
@@ -277,13 +279,13 @@ async def delete_subscription(
             select(Subscription).where(
                 Subscription.id == subscription_id,
                 Subscription.user_id == current_user.id,
-                Subscription.is_active == True,
+                Subscription.is_active == True,  # noqa: E712
             )
         )
         sub = result.scalar_one_or_none()
         if not sub:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        
+
         sub.is_active = False
         await db.commit()
         return {"message": "Subscription removed"}

@@ -2,9 +2,11 @@ import asyncio
 import os
 import sys
 from logging.config import fileConfig
-from sqlalchemy.ext.asyncio import create_async_engine
-from alembic import context
+
 from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from alembic import context
 
 # Make sure backend/ is on the path
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,8 +21,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(f"DATABASE_URL not found in {env_path}")
 
-from db.database import Base
-from db import models  # noqa: F401
+from db import models  # noqa: E402, F401
+from db.database import Base  # noqa: E402
 
 config = context.config
 fileConfig(config.config_file_name)

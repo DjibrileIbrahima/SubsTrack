@@ -1,13 +1,15 @@
-import os
 import logging
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from arq import cron
-from arq.connections import RedisSettings
-from db.database import AsyncSessionLocal
-from services.alert_service import generate_upcoming_alerts
+from arq import cron  # noqa: E402
+from arq.connections import RedisSettings  # noqa: E402
+
+from db.database import AsyncSessionLocal  # noqa: E402
+from services.alert_service import generate_upcoming_alerts  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,

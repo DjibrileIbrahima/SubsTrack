@@ -1,15 +1,13 @@
 """Unit tests for services/subscription_ai.py"""
 
 import json
-import pytest
 
 from services.subscription_ai import (
-    build_candidate_prompt,
-    parse_ai_response,
-    classify_candidate_with_ai,
     SYSTEM_PROMPT,
+    build_candidate_prompt,
+    classify_candidate_with_ai,
+    parse_ai_response,
 )
-
 
 SAMPLE_CANDIDATE = {
     "merchant": "Spotify",
@@ -114,14 +112,14 @@ class TestClassifyCandidateWithAi:
             "confidence": 0.95,
             "reason": "Recurring digital subscription",
         })
-        model_call = lambda system, user: ai_json
+        def model_call(system, user): return ai_json
         result = classify_candidate_with_ai(SAMPLE_CANDIDATE, model_call=model_call)
         assert result["is_subscription"] is True
         assert result["normalized_merchant"] == "Spotify"
         assert result["confidence"] <= 0.99  # capped
 
     def test_with_model_call_returning_bad_json(self):
-        model_call = lambda system, user: "```not valid json```"
+        def model_call(system, user): return "```not valid json```"
         result = classify_candidate_with_ai(SAMPLE_CANDIDATE, model_call=model_call)
         assert result["is_subscription"] is False
         assert result["reason"] == "AI returned an unparseable response."
@@ -133,7 +131,7 @@ class TestClassifyCandidateWithAi:
             "confidence": 1.5,  # over 1.0
             "frequency": "monthly",
         })
-        model_call = lambda system, user: ai_json
+        def model_call(system, user): return ai_json
         result = classify_candidate_with_ai(SAMPLE_CANDIDATE, model_call=model_call)
         assert result["confidence"] <= 0.99
 
@@ -143,7 +141,7 @@ class TestClassifyCandidateWithAi:
             "confidence": -0.5,  # below 0
             "frequency": "monthly",
         })
-        model_call = lambda system, user: ai_json
+        def model_call(system, user): return ai_json
         result = classify_candidate_with_ai(SAMPLE_CANDIDATE, model_call=model_call)
         assert result["confidence"] >= 0.0
 
@@ -153,7 +151,7 @@ class TestClassifyCandidateWithAi:
             "confidence": 0.8,
             "frequency": "semi-annual",  # not a valid value
         })
-        model_call = lambda system, user: ai_json
+        def model_call(system, user): return ai_json
         result = classify_candidate_with_ai(SAMPLE_CANDIDATE, model_call=model_call)
         assert result["frequency"] == "unknown"
 

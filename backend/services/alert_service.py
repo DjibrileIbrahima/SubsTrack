@@ -1,7 +1,9 @@
 import logging
 from datetime import date, timedelta
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.models import Alert, Subscription, User
 from services.email import send_alert_email
 
@@ -20,8 +22,8 @@ async def generate_upcoming_alerts(
     cutoff = today + timedelta(days=days_ahead)
 
     filters = [
-        Subscription.is_active == True,
-        Subscription.next_expected != None,
+        Subscription.is_active == True,  # noqa: E712
+        Subscription.next_expected != None,  # noqa: E711
         Subscription.next_expected >= today,
         Subscription.next_expected <= cutoff,
     ]
@@ -80,7 +82,7 @@ async def _send_email_notifications(db: AsyncSession, new_by_user: dict) -> None
     result = await db.execute(
         select(User).where(
             User.id.in_(list(new_by_user.keys())),
-            User.alert_email == True,
+            User.alert_email == True,  # noqa: E712
         )
     )
     users = result.scalars().all()

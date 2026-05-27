@@ -1,11 +1,9 @@
 """Unit tests for services/subscription_pipeline.py"""
 
 import json
-import pytest
 from datetime import date
 
-from services.subscription_pipeline import run_subscription_pipeline, merge_candidate_and_ai
-
+from services.subscription_pipeline import merge_candidate_and_ai, run_subscription_pipeline
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,7 +76,7 @@ class TestRunSubscriptionPipeline:
         """Candidates in the AI band (0.55–0.65) should be marked 'hybrid'."""
         # We can simulate this by providing a mock model_call that always approves
         txns = _make_txns("NETFLIX", 15.99)
-        model_call = lambda s, u: _good_ai_response()
+        def model_call(s, u): return _good_ai_response()
         results = run_subscription_pipeline(txns, model_call=model_call)
         # High-confidence results may come through as "rules"; hybrid only for mid-band
         detection_methods = {r["detection_method"] for r in results}
