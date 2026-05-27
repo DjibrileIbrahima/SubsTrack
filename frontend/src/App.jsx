@@ -1,15 +1,16 @@
-import { useEffect } from 'react'
+import { useState } from 'react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AuthPage from './pages/auth/AuthPage'
 import OAuthCallback from './pages/auth/OAuthCallback'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
+import Settings from './pages/Settings'
 import './index.css'
 
 function AppContent() {
   const { isAuthenticated, loading } = useAuth()
+  const [page, setPage] = useState('dashboard')
 
-  // Handle Google OAuth callback
   if (window.location.pathname === '/auth/callback') {
     return <OAuthCallback />
   }
@@ -34,8 +35,11 @@ function AppContent() {
 
   return (
     <div className="app">
-      <Navbar />
-      <Dashboard />
+      <Navbar onNavigate={setPage} currentPage={page} />
+      {page === 'settings'
+        ? <Settings onNavigate={setPage} />
+        : <Dashboard />
+      }
     </div>
   )
 }

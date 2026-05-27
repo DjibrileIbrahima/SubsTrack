@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { getAlerts, markAlertRead } from '../api'
 
-export default function Navbar() {
+export default function Navbar({ onNavigate, currentPage }) {
   const { user, logout } = useAuth()
   const [alerts, setAlerts] = useState([])
   const [alertsOpen, setAlertsOpen] = useState(false)
@@ -75,6 +75,12 @@ export default function Navbar() {
         {userOpen && (
           <div className="user-dropdown">
             <p className="user-email">{user?.email}</p>
+            <button
+              className="nav-menu-btn"
+              onClick={() => { setUserOpen(false); onNavigate(currentPage === 'settings' ? 'dashboard' : 'settings') }}
+            >
+              {currentPage === 'settings' ? '← Dashboard' : 'Settings'}
+            </button>
             <button className="logout-btn" onClick={logout}>Sign out</button>
           </div>
         )}

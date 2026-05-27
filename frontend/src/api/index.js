@@ -19,6 +19,9 @@ export const exchangeToken = (public_token, institution_name) =>
 export const getAccounts = () =>
   api.get('/auth/accounts').then(r => r.data.accounts)
 
+export const updateMe = (data) =>
+  api.patch('/auth/me', data).then(r => r.data)
+
 // Subscriptions
 export const getSavedSubscriptions = () =>
   api.get('/subscriptions/saved').then(r => r.data)
