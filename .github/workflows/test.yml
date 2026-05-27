@@ -32,7 +32,7 @@ jobs:
         env:
           JWT_SECRET: "ci-test-jwt-secret-long-enough-for-testing-!!"
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY_TEST || 'dGhpcyBpcyBhIHRlc3Qga2V5IHBhZGRlZCBoZXJlISE=' }}
-          REDIS_URL: "memory://"
+          REDIS_URL: "redis://localhost:6379"
           PLAID_CLIENT_ID: "test"
           PLAID_SECRET: "test"
           COOKIE_SECURE: "false"
