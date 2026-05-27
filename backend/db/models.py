@@ -1,8 +1,10 @@
-import uuid, enum
+import uuid
+from datetime import date, datetime
+
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
-from datetime import datetime, date
-from sqlalchemy import String, Float, Integer, DateTime, Date, ForeignKey, func, Boolean, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from db.database import Base
 
 
@@ -63,7 +65,7 @@ class Alert(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True, nullable=True)
-    
+
     message: Mapped[str] = mapped_column(String, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)

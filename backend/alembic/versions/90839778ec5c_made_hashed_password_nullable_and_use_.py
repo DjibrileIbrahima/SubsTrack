@@ -5,10 +5,8 @@ Revises: 8882728d357d
 Create Date: 2026-04-01 03:19:23.449773
 
 """
-from typing import Sequence, Union
-from alembic import op
-import sqlalchemy as sa
-
+from collections.abc import Sequence
+from typing import Union
 
 revision: str = '90839778ec5c'
 down_revision: Union[str, None] = '8882728d357d'

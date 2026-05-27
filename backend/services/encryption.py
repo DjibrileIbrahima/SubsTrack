@@ -1,4 +1,5 @@
 import os
+
 from cryptography.fernet import Fernet
 
 _key = os.getenv("ENCRYPTION_KEY")

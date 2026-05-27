@@ -1,6 +1,7 @@
 import os
+from datetime import UTC, datetime, timedelta
+
 import jwt
-from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -13,7 +14,7 @@ if not JWT_SECRET:
 
 def create_access_token(user_id: str) -> str:
     """Create a signed JWT token for a user."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(minutes=JWT_EXPIRE_MINUTES)
     payload = {"sub": user_id, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

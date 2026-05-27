@@ -2,19 +2,16 @@
 Edge-case tests for subscription detection and async worker behaviour.
 """
 
-import pytest
 from datetime import date, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from services.subscription_detector import (
-    detect_subscriptions,
-    detect_subscription_candidates,
-    build_candidate,
-    infer_frequency,
     amount_consistency_score,
+    detect_subscription_candidates,
+    detect_subscriptions,
+    infer_frequency,
     interval_consistency_score,
 )
-
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -261,6 +258,7 @@ class TestRunAlertJob:
 
     async def test_run_alert_job_logs_on_exception(self, caplog):
         import logging
+
         from worker import run_alert_job
 
         with patch("worker.AsyncSessionLocal") as mock_session_cls, \

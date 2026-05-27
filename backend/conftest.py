@@ -7,6 +7,7 @@ module-load time rather than at test-run time.
 """
 
 import os
+
 from cryptography.fernet import Fernet
 
 # ─── Set env vars BEFORE importing any backend module ────────────────────────
@@ -41,22 +42,21 @@ except Exception:
     pass  # safe fallback
 
 # ─── Now import backend modules ───────────────────────────────────────────────
+from datetime import date, timedelta
+from unittest.mock import AsyncMock, patch
+
 import bcrypt
 import pytest
 import pytest_asyncio
-from datetime import date, timedelta
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-from unittest.mock import AsyncMock, patch
 
-from db.database import Base
-from db.models import User, LinkedAccount, Subscription, Alert
+from db.database import Base, get_db
+from db.models import LinkedAccount, Subscription, User
 from main import app
-from db.database import get_db
-from services.jwt import create_access_token
 from services.encryption import encrypt as _encrypt
-
+from services.jwt import create_access_token
 
 # ─── Database fixture ─────────────────────────────────────────────────────────
 

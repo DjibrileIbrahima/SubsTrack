@@ -1,7 +1,7 @@
 """Tests for POST /api/webhooks/plaid."""
 
+
 import pytest
-from unittest.mock import patch
 
 
 class TestWebhookBasics:

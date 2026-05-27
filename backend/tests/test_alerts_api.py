@@ -5,12 +5,9 @@ Covers: list, generate, mark-read, delete, ordering, idempotency, cross-user iso
 """
 
 import uuid
-import pytest
-import pytest_asyncio
 from datetime import date, timedelta
 
 from db.models import Alert, Subscription
-
 
 # ─── GET /api/alerts ─────────────────────────────────────────────────────────
 

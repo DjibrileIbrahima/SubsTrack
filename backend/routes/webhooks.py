@@ -7,7 +7,8 @@ processing: https://plaid.com/docs/api/webhook-verification/
 """
 
 import logging
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

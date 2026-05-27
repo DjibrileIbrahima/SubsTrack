@@ -1,5 +1,5 @@
-from services.subscription_detector import detect_subscription_candidates
 from services.subscription_ai import classify_candidate_with_ai
+from services.subscription_detector import detect_subscription_candidates
 
 
 def merge_candidate_and_ai(candidate: dict, ai_result: dict) -> dict | None:

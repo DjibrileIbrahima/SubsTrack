@@ -3,7 +3,7 @@
 import pytest
 from cryptography.fernet import InvalidToken
 
-from services.encryption import encrypt, decrypt
+from services.encryption import decrypt, encrypt
 
 
 class TestEncryption:

@@ -1,7 +1,9 @@
 import uuid
+
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.database import get_db
 from db.models import User
 from services.jwt import decode_access_token

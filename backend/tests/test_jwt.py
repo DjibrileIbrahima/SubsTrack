@@ -1,12 +1,11 @@
 """Unit tests for services/jwt.py"""
 
-import time
+from datetime import UTC, datetime, timedelta
+
 import pytest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from fastapi import HTTPException
 
 from services.jwt import create_access_token, decode_access_token
-from fastapi import HTTPException
 
 
 class TestCreateAccessToken:
@@ -26,8 +25,9 @@ class TestCreateAccessToken:
         assert t1 != t2
 
     def test_token_is_a_valid_jwt(self):
-        import jwt as pyjwt
         import os
+
+        import jwt as pyjwt
         token = create_access_token("test-user")
         payload = pyjwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
         assert payload["sub"] == "test-user"
@@ -40,11 +40,12 @@ class TestDecodeAccessToken:
         assert decode_access_token(token) == "abc-123"
 
     def test_expired_token_raises_401(self):
-        import jwt as pyjwt
         import os
+
+        import jwt as pyjwt
         payload = {
             "sub": "user-id",
-            "exp": datetime.now(timezone.utc) - timedelta(seconds=1),
+            "exp": datetime.now(UTC) - timedelta(seconds=1),
         }
         expired_token = pyjwt.encode(payload, os.environ["JWT_SECRET"], algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
@@ -66,16 +67,17 @@ class TestDecodeAccessToken:
 
     def test_token_signed_with_wrong_secret_raises_401(self):
         import jwt as pyjwt
-        payload = {"sub": "user-id", "exp": datetime.now(timezone.utc) + timedelta(hours=1)}
+        payload = {"sub": "user-id", "exp": datetime.now(UTC) + timedelta(hours=1)}
         token = pyjwt.encode(payload, "wrong-secret", algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             decode_access_token(token)
         assert exc_info.value.status_code == 401
 
     def test_token_without_sub_raises_401(self):
-        import jwt as pyjwt
         import os
-        payload = {"exp": datetime.now(timezone.utc) + timedelta(hours=1)}
+
+        import jwt as pyjwt
+        payload = {"exp": datetime.now(UTC) + timedelta(hours=1)}
         token = pyjwt.encode(payload, os.environ["JWT_SECRET"], algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             decode_access_token(token)

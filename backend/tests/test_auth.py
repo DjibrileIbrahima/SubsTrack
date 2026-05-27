@@ -5,14 +5,11 @@ Covers: register, login, logout, /me, Google OAuth flow,
 Plaid link-token, token exchange, and linked accounts.
 """
 
-import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from db.models import User, LinkedAccount
-from services.jwt import create_access_token
-from services.encryption import encrypt as _encrypt, decrypt
-
+from db.models import LinkedAccount, User
+from services.encryption import decrypt
+from services.encryption import encrypt as _encrypt
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 

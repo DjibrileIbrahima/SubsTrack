@@ -1,7 +1,6 @@
 """Tests for the arq background worker (worker.py)."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 
 class TestRunAlertJob:
@@ -72,7 +71,6 @@ class TestWorkerSettings:
         assert cron_job.minute in (0, {0})
 
     def test_redis_settings_from_env(self):
-        import os
         from worker import WorkerSettings
         # Should use REDIS_URL from environment
         assert WorkerSettings.redis_settings is not None

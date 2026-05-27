@@ -1,22 +1,23 @@
-import os
 import logging
+import os
 import secrets
-import httpx
+
 import bcrypt
-from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
-from limiter import limiter
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
-from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
-from plaid_client import client, PLAID_PRODUCTS, PLAID_COUNTRY_CODES
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.database import get_db
-from db.models import User, LinkedAccount
 from db.deps import get_current_user
+from db.models import LinkedAccount, User
+from limiter import limiter
+from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 from services.encryption import encrypt
 from services.jwt import create_access_token
 
@@ -228,9 +229,9 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 class UpdateMeRequest(BaseModel):
-    alert_email: Optional[bool] = None
-    alert_sms: Optional[bool] = None
-    phone: Optional[str] = Field(default=None, max_length=20)
+    alert_email: bool | None = None
+    alert_sms: bool | None = None
+    phone: str | None = Field(default=None, max_length=20)
 
 
 @router.patch("/me")

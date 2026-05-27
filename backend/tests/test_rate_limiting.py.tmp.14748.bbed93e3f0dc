@@ -1,9 +1,11 @@
 """Tests for rate limiter configuration and 429 error handling."""
 
-from unittest.mock import MagicMock
-
+import pytest
+from fastapi import Request
+from fastapi.testclient import TestClient
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from unittest.mock import MagicMock
 
 
 class TestLimiterConfig:
@@ -13,20 +15,18 @@ class TestLimiterConfig:
 
     def test_limiter_storage_uri_is_redis(self):
         import os
-
         from limiter import limiter
         expected = os.getenv("REDIS_URL", "redis://localhost:6379")
         assert limiter._storage_uri == expected
 
     def test_limiter_is_registered_on_app(self):
-        from limiter import limiter
         from main import app
+        from limiter import limiter
         assert app.state.limiter is limiter
 
     def test_rate_limit_exceeded_handler_registered(self):
-        from slowapi.errors import RateLimitExceeded
-
         from main import app
+        from slowapi.errors import RateLimitExceeded
         assert RateLimitExceeded in app.exception_handlers
 
 

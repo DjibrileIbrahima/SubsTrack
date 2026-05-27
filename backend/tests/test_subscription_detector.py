@@ -1,17 +1,15 @@
 """Tests for services/subscription_detector.py"""
-import pytest
 from datetime import date, timedelta
+
 from services.subscription_detector import (
-    normalize_merchant,
     amount_consistency_score,
-    interval_consistency_score,
-    infer_frequency,
     detect_subscriptions,
-    detect_subscription_candidates,
     has_non_subscription_hint,
     has_subscription_keyword,
+    infer_frequency,
+    interval_consistency_score,
+    normalize_merchant,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -5,14 +5,10 @@ Tests the core alert generation logic (message text, idempotency, user scoping,
 and email notification) using an in-memory DB, without going through HTTP.
 """
 
-import pytest
-import pytest_asyncio
 from datetime import date, timedelta
-from unittest.mock import AsyncMock, patch
 
-from db.models import Alert, Subscription, User
+from db.models import Alert, Subscription
 from services.alert_service import generate_upcoming_alerts
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 

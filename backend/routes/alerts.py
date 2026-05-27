@@ -1,13 +1,15 @@
-import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from db.database import get_db
-from db.models import Alert, User
 from db.deps import get_current_user
-from services.alert_service import generate_upcoming_alerts
+from db.models import Alert, User
 from limiter import limiter
+from services.alert_service import generate_upcoming_alerts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

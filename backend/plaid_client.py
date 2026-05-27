@@ -1,8 +1,9 @@
 import os
-from plaid.api import plaid_api
-from plaid.model.products import Products
-from plaid.model.country_code import CountryCode
+
 from plaid import ApiClient, Configuration, Environment
+from plaid.api import plaid_api
+from plaid.model.country_code import CountryCode
+from plaid.model.products import Products
 
 PLAID_CLIENT_ID = os.getenv("PLAID_CLIENT_ID")
 PLAID_SECRET = os.getenv("PLAID_SECRET")

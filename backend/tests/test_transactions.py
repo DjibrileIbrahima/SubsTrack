@@ -3,14 +3,10 @@ Tests for /api/transactions, /api/subscriptions/*, and /api/summary routes.
 """
 
 import uuid
-import pytest
-import pytest_asyncio
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
-from db.models import Subscription, LinkedAccount
-from services.encryption import encrypt
-
+from db.models import Subscription
 
 # ─── Plaid mock factory ───────────────────────────────────────────────────────
 
