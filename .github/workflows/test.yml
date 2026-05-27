@@ -78,6 +78,5 @@ jobs:
             cd /opt/substrack
             git pull
             sudo /opt/substrack/load-secrets.sh
-            export POSTGRES_PASSWORD=$(grep POSTGRES_PASSWORD backend/.env | cut -d= -f2)
             sudo docker-compose up --build -d
             sudo docker-compose exec -T backend python -m alembic upgrade head

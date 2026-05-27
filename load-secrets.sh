@@ -22,3 +22,9 @@ aws ssm get-parameters-by-path \
 done > "$DEST"
 
 echo "Wrote $(wc -l < "$DEST") variables to $DEST"
+
+# Also write a root-level .env so docker-compose variable substitution
+# (${POSTGRES_PASSWORD:?...} etc.) works without a manual export.
+grep -E '^(POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB)=' "$DEST" \
+    > "$(dirname "$0")/.env"
+echo "Wrote docker-compose vars to .env"
