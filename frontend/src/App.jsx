@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AuthPage from './pages/auth/AuthPage'
 import OAuthCallback from './pages/auth/OAuthCallback'
+import ResetPassword from './pages/auth/ResetPassword'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
@@ -13,6 +14,18 @@ function AppContent() {
 
   if (window.location.pathname === '/auth/callback') {
     return <OAuthCallback />
+  }
+
+  const resetToken = new URLSearchParams(window.location.search).get('token')
+  if (resetToken) {
+    return (
+      <div className="auth-bg">
+        <ResetPassword token={resetToken} onSuccess={() => {
+          window.history.replaceState({}, '', '/')
+          window.location.reload()
+        }} />
+      </div>
+    )
   }
 
   if (loading) {
