@@ -1,5 +1,6 @@
 """Background subscription sync triggered by Plaid webhooks."""
 
+import asyncio
 import logging
 from datetime import date, timedelta
 
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from db.models import LinkedAccount, Subscription
 from plaid_client import client as plaid_client
 from services.encryption import decrypt
+from services.groq_client import groq_model_call
 from services.subscription_pipeline import run_subscription_pipeline
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,11 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 if isinstance(t.get("date"), date):
                     t["date"] = t["date"].isoformat()
 
-            detected = run_subscription_pipeline(txns)
+            try:
+                detected = await asyncio.to_thread(run_subscription_pipeline, txns, groq_model_call)
+            except Exception:
+                logger.warning("AI pipeline failed for item_id=%s — falling back to rules-only", item_id)
+                detected = run_subscription_pipeline(txns)
 
             for sub in detected:
                 existing_result = await db.execute(

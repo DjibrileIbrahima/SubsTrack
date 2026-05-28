@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import date, datetime, timedelta
@@ -16,6 +17,7 @@ from db.models import LinkedAccount, Subscription, User
 from limiter import limiter
 from plaid_client import client
 from services.encryption import decrypt
+from services.groq_client import groq_model_call
 from services.subscription_pipeline import run_subscription_pipeline
 
 router = APIRouter()
@@ -137,7 +139,11 @@ async def sync_subscriptions(
             if isinstance(t.get("date"), date):
                 t["date"] = t["date"].isoformat()
 
-        detected = run_subscription_pipeline(txns)
+        try:
+            detected = await asyncio.to_thread(run_subscription_pipeline, txns, groq_model_call)
+        except Exception:
+            logger.warning("AI pipeline failed — falling back to rules-only detection")
+            detected = run_subscription_pipeline(txns)
 
         for sub in detected:
             result = await db.execute(
