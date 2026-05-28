@@ -153,7 +153,7 @@ async def sync_subscriptions(
                     Subscription.source == "plaid",
                 )
             )
-            existing = result.scalar_one_or_none()
+            existing = result.scalars().first()
             if existing:
                 if existing.is_active is False:
                     continue

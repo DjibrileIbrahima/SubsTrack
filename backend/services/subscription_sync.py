@@ -66,7 +66,7 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                         Subscription.source == "plaid",
                     )
                 )
-                existing = existing_result.scalar_one_or_none()
+                existing = existing_result.scalars().first()
                 if existing:
                     if existing.is_active is False:
                         continue
