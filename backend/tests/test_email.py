@@ -9,7 +9,6 @@ endpoint, payload structure, and failure handling — using a mocked HTTP client
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 
 from services.email import _build_alert_email, send_alert_email, send_reset_email
 
