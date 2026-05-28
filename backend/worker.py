@@ -32,6 +32,6 @@ class WorkerSettings:
         os.getenv("REDIS_URL", "redis://localhost:6379")
     )
     functions = [run_alert_job]
-    cron_jobs = [cron(run_alert_job, hour=8, minute=0)]
+    cron_jobs = [cron(run_alert_job, hour=0, minute=45)]  # TEMP: 8:45pm ET — revert to hour=8, minute=0
     max_tries = 3        # retry a failed job up to 3 times before giving up
     job_timeout = 300    # cancel any job that runs longer than 5 minutes
