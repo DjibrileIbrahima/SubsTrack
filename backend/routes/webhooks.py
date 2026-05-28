@@ -1,16 +1,11 @@
-"""
-Plaid webhook receiver.
-
-Plaid sends signed webhook events for transaction updates, item errors, etc.
-In production, verify the webhook signature using Plaid's JWK endpoint before
-processing: https://plaid.com/docs/api/webhook-verification/
-"""
-
+import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
+from plaid_client import PLAID_ENV
 from services.subscription_sync import sync_subscriptions_for_item
+from services.webhook_verification import verify_plaid_webhook
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,9 +24,20 @@ ITEM_CODES = {
 
 @router.post("/plaid")
 async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Entry point for all Plaid webhook events."""
+    raw_body = await request.body()
+
+    token = request.headers.get("Plaid-Verification")
+    if token:
+        try:
+            await verify_plaid_webhook(token, raw_body)
+        except ValueError as exc:
+            logger.warning("Webhook signature verification failed: %s", exc)
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    elif PLAID_ENV == "production":
+        raise HTTPException(status_code=401, detail="Missing Plaid-Verification header")
+
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 

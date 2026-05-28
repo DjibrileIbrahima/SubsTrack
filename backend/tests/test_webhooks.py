@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+VERIFY_PATH = "routes.webhooks.verify_plaid_webhook"
+PLAID_ENV_PATH = "routes.webhooks.PLAID_ENV"
+
 
 class TestWebhookBasics:
     async def test_valid_json_returns_200(self, client):
@@ -228,6 +231,60 @@ class TestWebhookSyncTrigger:
             })
         assert res.status_code == 200
         mock_sync.assert_not_awaited()
+
+
+class TestWebhookSignatureVerification:
+    """Verify the route enforces signature checks correctly."""
+
+    async def test_valid_signature_passes(self, client):
+        with patch(VERIFY_PATH, new_callable=AsyncMock) as mock_verify:
+            mock_verify.return_value = None
+            res = await client.post(
+                "/api/webhooks/plaid",
+                json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE", "item_id": "item-abc"},
+                headers={"Plaid-Verification": "valid.jwt.token"},
+            )
+        assert res.status_code == 200
+        mock_verify.assert_awaited_once()
+
+    async def test_invalid_signature_returns_400(self, client):
+        with patch(VERIFY_PATH, new_callable=AsyncMock) as mock_verify:
+            mock_verify.side_effect = ValueError("JWT signature verification failed")
+            res = await client.post(
+                "/api/webhooks/plaid",
+                json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE"},
+                headers={"Plaid-Verification": "bad.jwt.token"},
+            )
+        assert res.status_code == 400
+        assert "signature" in res.json()["detail"].lower()
+
+    async def test_missing_header_in_sandbox_allowed(self, client):
+        with patch(PLAID_ENV_PATH, "sandbox"):
+            res = await client.post(
+                "/api/webhooks/plaid",
+                json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE", "item_id": "item-abc"},
+            )
+        assert res.status_code == 200
+
+    async def test_missing_header_in_production_returns_401(self, client):
+        with patch(PLAID_ENV_PATH, "production"):
+            res = await client.post(
+                "/api/webhooks/plaid",
+                json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE", "item_id": "item-abc"},
+            )
+        assert res.status_code == 401
+        assert "Plaid-Verification" in res.json()["detail"]
+
+    async def test_verify_called_with_raw_body_and_token(self, client):
+        payload = b'{"webhook_type":"ITEM","webhook_code":"ERROR","item_id":"item-abc"}'
+        with patch(VERIFY_PATH, new_callable=AsyncMock) as mock_verify:
+            mock_verify.return_value = None
+            await client.post(
+                "/api/webhooks/plaid",
+                content=payload,
+                headers={"Content-Type": "application/json", "Plaid-Verification": "my.jwt"},
+            )
+        mock_verify.assert_awaited_once_with("my.jwt", payload)
 
 
 class TestWebhookCaseInsensitivity:
