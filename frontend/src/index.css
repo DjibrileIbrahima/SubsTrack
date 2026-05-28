@@ -417,6 +417,15 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.auth-success {
+  color: var(--accent);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: var(--radius-sm);
+}
+
 .auth-fields {
   display: flex;
   flex-direction: column;

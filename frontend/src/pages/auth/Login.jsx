@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import api from '../../api'
 
-export default function Login({ onSwitch }) {
+export default function Login({ onSwitch, onForgot, successMessage }) {
   const { login } = useAuth()
   const [form, setForm] = useState({ email: '', password: '' })
   const [loading, setLoading] = useState(false)
@@ -35,6 +35,7 @@ export default function Login({ onSwitch }) {
       </div>
       <h1 className="auth-title">Welcome back</h1>
       <p className="auth-subtitle">Sign in to your account</p>
+      {successMessage && <p className="auth-success">{successMessage}</p>}
       {error && <p className="auth-error">{error}</p>}
       <div className="auth-fields">
         <input className="form-input" type="email" placeholder="Email"
@@ -47,6 +48,9 @@ export default function Login({ onSwitch }) {
       </button>
       <div className="auth-divider"><span>or</span></div>
       <button className="btn-google" onClick={handleGoogle}><GoogleIcon />Continue with Google</button>
+      <p className="auth-switch">
+        <button className="link-btn" onClick={onForgot}>Forgot password?</button>
+      </p>
       <p className="auth-switch">Don't have an account?{' '}
         <button className="link-btn" onClick={onSwitch}>Sign up</button>
       </p>

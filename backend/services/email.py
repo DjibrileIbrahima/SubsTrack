@@ -89,6 +89,64 @@ def _build_alert_email(alerts: list) -> tuple[str, str]:
     return subject, html
 
 
+async def send_reset_email(to: str, reset_url: str) -> bool:
+    """Send a password reset link via Resend. Returns True on success."""
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY not configured — skipping reset email to %s", to)
+        return False
+
+    subject = "SubsTrack: Reset your password"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f5f5f3;font-family:'DM Sans',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f3;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border:1px solid #e4e4e0;border-radius:12px;overflow:hidden;max-width:560px;width:100%;">
+        <tr>
+          <td style="padding:24px 32px;border-bottom:1px solid #e4e4e0;">
+            <span style="display:inline-block;width:28px;height:28px;background:#1a1a18;color:#fff;border-radius:7px;text-align:center;line-height:28px;font-weight:600;font-size:14px;margin-right:8px;">S</span>
+            <span style="font-weight:600;font-size:15px;letter-spacing:-0.02em;vertical-align:middle;">SubsTrack</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:28px 32px;">
+            <p style="margin:0 0 8px;font-size:20px;font-weight:600;letter-spacing:-0.02em;color:#1a1a18;">Reset your password</p>
+            <p style="margin:0 0 24px;font-size:14px;color:#888884;">Click the button below to set a new password. This link expires in 1 hour.</p>
+            <a href="{reset_url}" style="display:inline-block;padding:10px 20px;background:#1a1a18;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500;">
+              Reset password
+            </a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px;border-top:1px solid #e4e4e0;font-size:12px;color:#888884;">
+            If you didn't request this, you can safely ignore this email.
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+                json={"from": ALERT_FROM, "to": [to], "subject": subject, "html": html},
+            )
+            r.raise_for_status()
+            logger.info("Reset email sent to %s", to)
+            return True
+    except httpx.HTTPStatusError as exc:
+        logger.error("Resend rejected reset email to %s: %s %s", to, exc.response.status_code, exc.response.text)
+        return False
+    except Exception:
+        logger.exception("Failed to send reset email to %s", to)
+        return False
+
+
 async def send_alert_email(to: str, alerts: list) -> bool:
     """Send an upcoming-charges email via Resend. Returns True on success."""
     if not RESEND_API_KEY:

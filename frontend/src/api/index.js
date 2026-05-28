@@ -22,6 +22,12 @@ export const getAccounts = () =>
 export const updateMe = (data) =>
   api.patch('/auth/me', data).then(r => r.data)
 
+export const requestPasswordReset = (email) =>
+  api.post('/auth/forgot-password', { email }).then(r => r.data)
+
+export const resetPassword = (token, password) =>
+  api.post('/auth/reset-password', { token, password }).then(r => r.data)
+
 // Subscriptions
 export const getSavedSubscriptions = () =>
   api.get('/subscriptions/saved').then(r => r.data)
