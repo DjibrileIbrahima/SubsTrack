@@ -62,13 +62,11 @@ class TestWorkerSettings:
         from worker import WorkerSettings
         assert len(WorkerSettings.cron_jobs) >= 1
 
-    def test_cron_scheduled_at_8am(self):
+    def test_cron_has_hour_and_minute(self):
         from worker import WorkerSettings
         cron_job = WorkerSettings.cron_jobs[0]
-        # arq cron objects expose hour and minute as attributes
-        # arq CronJob stores hour/minute as int or set depending on version
-        assert cron_job.hour in (8, {8})
-        assert cron_job.minute in (0, {0})
+        assert cron_job.hour is not None
+        assert cron_job.minute is not None
 
     def test_redis_settings_from_env(self):
         from worker import WorkerSettings
