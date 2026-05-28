@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
@@ -149,7 +149,7 @@ async def sync_subscriptions(
             result = await db.execute(
                 select(Subscription).where(
                     Subscription.user_id == current_user.id,
-                    Subscription.merchant == sub["merchant"],
+                    func.lower(Subscription.merchant) == sub["merchant"].lower(),
                     Subscription.source == "plaid",
                 )
             )
@@ -157,6 +157,7 @@ async def sync_subscriptions(
             if existing:
                 if existing.is_active is False:
                     continue
+                existing.merchant = sub["merchant"]
                 existing.amount = sub["amount"]
                 existing.frequency = sub["frequency"]
                 existing.category = sub["category"]

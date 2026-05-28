@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 from plaid.model.transactions_get_request import TransactionsGetRequest
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from db.models import LinkedAccount, Subscription
 from plaid_client import client as plaid_client
@@ -62,7 +62,7 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 existing_result = await db.execute(
                     select(Subscription).where(
                         Subscription.user_id == user_id,
-                        Subscription.merchant == sub["merchant"],
+                        func.lower(Subscription.merchant) == sub["merchant"].lower(),
                         Subscription.source == "plaid",
                     )
                 )
@@ -70,6 +70,7 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 if existing:
                     if existing.is_active is False:
                         continue
+                    existing.merchant = sub["merchant"]
                     existing.amount = sub["amount"]
                     existing.frequency = sub["frequency"]
                     existing.category = sub["category"]
