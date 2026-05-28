@@ -14,10 +14,11 @@ vi.mock('../context/AuthContext', () => ({
 vi.mock('../api', () => ({
   updateMe: vi.fn(),
   getAccounts: vi.fn(),
+  unlinkAccount: vi.fn(),
 }))
 
 import { useAuth } from '../context/AuthContext'
-import { updateMe, getAccounts } from '../api'
+import { updateMe, getAccounts, unlinkAccount } from '../api'
 
 const MOCK_USER = {
   email: 'user@example.com',
@@ -65,29 +66,93 @@ describe('Settings — rendering', () => {
   })
 
   it('shows linked bank name when accounts are present', async () => {
-    getAccounts.mockResolvedValue([{ institution_name: 'Chase' }])
+    getAccounts.mockResolvedValue([{ id: 'acc-1', institution_name: 'Chase' }])
     renderSettings()
     await waitFor(() => {
       expect(screen.getByText('Chase')).toBeInTheDocument()
     })
   })
 
-  it('does not show Linked bank row when no accounts', async () => {
+  it('does not show Linked banks section when no accounts', async () => {
     getAccounts.mockResolvedValue([])
     renderSettings()
     await waitFor(() => {})
-    expect(screen.queryByText('Linked bank')).not.toBeInTheDocument()
+    expect(screen.queryByText(/linked banks/i)).not.toBeInTheDocument()
   })
 
-  it('shows multiple linked bank names comma-separated', async () => {
+  it('shows multiple linked banks each on their own row', async () => {
     getAccounts.mockResolvedValue([
-      { institution_name: 'Chase' },
-      { institution_name: 'Wells Fargo' },
+      { id: 'acc-1', institution_name: 'Chase' },
+      { id: 'acc-2', institution_name: 'Wells Fargo' },
     ])
     renderSettings()
     await waitFor(() => {
-      expect(screen.getByText('Chase, Wells Fargo')).toBeInTheDocument()
+      expect(screen.getByText('Chase')).toBeInTheDocument()
+      expect(screen.getByText('Wells Fargo')).toBeInTheDocument()
     })
+  })
+})
+
+// ── Unlink account ───────────────────────────────────────────────────────────
+
+describe('Settings — unlink account', () => {
+  const ACCOUNTS = [
+    { id: 'acc-1', institution_name: 'Chase' },
+    { id: 'acc-2', institution_name: 'Wells Fargo' },
+  ]
+
+  beforeEach(() => {
+    getAccounts.mockResolvedValue(ACCOUNTS)
+  })
+
+  it('shows an Unlink button for each account', async () => {
+    renderSettings()
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: /unlink/i })).toHaveLength(2)
+    })
+  })
+
+  it('calls unlinkAccount with the correct id', async () => {
+    unlinkAccount.mockResolvedValue({ message: 'Account unlinked' })
+    renderSettings()
+    await screen.findByText('Chase')
+
+    await userEvent.click(screen.getByRole('button', { name: /unlink chase/i }))
+
+    await waitFor(() => expect(unlinkAccount).toHaveBeenCalledWith('acc-1'))
+  })
+
+  it('removes the account from the list after successful unlink', async () => {
+    unlinkAccount.mockResolvedValue({ message: 'Account unlinked' })
+    renderSettings()
+    await screen.findByText('Chase')
+
+    await userEvent.click(screen.getByRole('button', { name: /unlink chase/i }))
+
+    await waitFor(() => expect(screen.queryByText('Chase')).not.toBeInTheDocument())
+    expect(screen.getByText('Wells Fargo')).toBeInTheDocument()
+  })
+
+  it('shows error when unlink fails', async () => {
+    unlinkAccount.mockRejectedValue(new Error('Server error'))
+    renderSettings()
+    await screen.findByText('Chase')
+
+    await userEvent.click(screen.getByRole('button', { name: /unlink chase/i }))
+
+    expect(await screen.findByText(/failed to unlink/i)).toBeInTheDocument()
+  })
+
+  it('shows Unlinking… while in flight', async () => {
+    let resolve
+    unlinkAccount.mockReturnValue(new Promise(r => { resolve = r }))
+    renderSettings()
+    await screen.findByText('Chase')
+
+    await userEvent.click(screen.getByRole('button', { name: /unlink chase/i }))
+
+    expect(screen.getByText('Unlinking…')).toBeInTheDocument()
+    resolve({ message: 'Account unlinked' })
   })
 })
 

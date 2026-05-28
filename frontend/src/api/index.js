@@ -19,6 +19,9 @@ export const exchangeToken = (public_token, institution_name) =>
 export const getAccounts = () =>
   api.get('/auth/accounts').then(r => r.data.accounts)
 
+export const unlinkAccount = (id) =>
+  api.delete(`/auth/accounts/${id}`).then(r => r.data)
+
 export const updateMe = (data) =>
   api.patch('/auth/me', data).then(r => r.data)
 

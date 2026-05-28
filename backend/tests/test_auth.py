@@ -6,12 +6,13 @@ Plaid link-token, token exchange, linked accounts,
 forgot-password, and reset-password.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import select
 
-from db.models import LinkedAccount, PasswordResetToken, User
+from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from services.encryption import decrypt
 from services.encryption import encrypt as _encrypt
 
@@ -362,6 +363,74 @@ class TestGetAccounts:
 
     async def test_get_accounts_unauthenticated(self, client):
         r = await client.get("/api/auth/accounts")
+        assert r.status_code == 401
+
+
+# ─── DELETE /api/auth/accounts/{id} ─────────────────────────────────────────
+
+class TestUnlinkAccount:
+    async def test_unlink_success(self, auth_client, db, test_account):
+        r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        assert r.status_code == 200
+        assert r.json()["message"] == "Account unlinked"
+
+    async def test_account_removed_from_db(self, auth_client, db, test_account):
+        await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        result = await db.execute(select(LinkedAccount).where(LinkedAccount.id == test_account.id))
+        assert result.scalar_one_or_none() is None
+
+    async def test_plaid_subscriptions_soft_deleted(self, auth_client, db, test_user, test_account):
+        sub = Subscription(
+            user_id=test_user.id,
+            merchant="Netflix",
+            amount=15.99,
+            frequency="monthly",
+            source="plaid",
+            is_active=True,
+        )
+        db.add(sub)
+        await db.flush()
+
+        await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+
+        await db.refresh(sub)
+        assert sub.is_active is False
+
+    async def test_manual_subscriptions_unaffected(self, auth_client, db, test_user, test_account):
+        manual_sub = Subscription(
+            user_id=test_user.id,
+            merchant="Spotify",
+            amount=9.99,
+            frequency="monthly",
+            source="manual",
+            is_active=True,
+        )
+        db.add(manual_sub)
+        await db.flush()
+
+        await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+
+        await db.refresh(manual_sub)
+        assert manual_sub.is_active is True
+
+    async def test_cannot_unlink_other_users_account(self, auth_client, db, test_user2):
+        other_account = LinkedAccount(
+            user_id=test_user2.id,
+            access_token=_encrypt("other-token"),
+            institution_name="Other Bank",
+        )
+        db.add(other_account)
+        await db.flush()
+
+        r = await auth_client.delete(f"/api/auth/accounts/{other_account.id}")
+        assert r.status_code == 404
+
+    async def test_nonexistent_account_returns_404(self, auth_client):
+        r = await auth_client.delete(f"/api/auth/accounts/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+    async def test_unauthenticated_returns_401(self, client, test_account):
+        r = await client.delete(f"/api/auth/accounts/{test_account.id}")
         assert r.status_code == 401
 
 

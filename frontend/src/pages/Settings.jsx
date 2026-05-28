@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { updateMe, getAccounts } from '../api'
-import { useEffect } from 'react'
+import { updateMe, getAccounts, unlinkAccount } from '../api'
 
 export default function Settings({ onNavigate }) {
   const { user, updateUser } = useAuth()
@@ -14,9 +13,25 @@ export default function Settings({ onNavigate }) {
   const [error, setError] = useState('')
 
   const [accounts, setAccounts] = useState([])
+  const [unlinking, setUnlinking] = useState(null)
+  const [unlinkError, setUnlinkError] = useState('')
+
   useEffect(() => {
     getAccounts().then(setAccounts).catch(() => {})
   }, [])
+
+  const handleUnlink = async (id) => {
+    setUnlinking(id)
+    setUnlinkError('')
+    try {
+      await unlinkAccount(id)
+      setAccounts(prev => prev.filter(a => a.id !== id))
+    } catch {
+      setUnlinkError('Failed to unlink account.')
+    } finally {
+      setUnlinking(null)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -59,11 +74,24 @@ export default function Settings({ onNavigate }) {
           <span className="settings-value">{user?.email}</span>
         </div>
         {accounts.length > 0 && (
-          <div className="settings-row">
-            <span className="settings-label">Linked bank</span>
-            <span className="settings-value">
-              {accounts.map(a => a.institution_name).join(', ')}
-            </span>
+          <div>
+            <div className="settings-row">
+              <span className="settings-label">Linked banks</span>
+            </div>
+            {unlinkError && <p className="form-error" style={{ marginBottom: 8 }}>{unlinkError}</p>}
+            {accounts.map(a => (
+              <div key={a.id} className="settings-row settings-account-row">
+                <span className="settings-value">{a.institution || a.institution_name}</span>
+                <button
+                  className="unlink-btn"
+                  onClick={() => handleUnlink(a.id)}
+                  disabled={unlinking === a.id}
+                  aria-label={`Unlink ${a.institution || a.institution_name}`}
+                >
+                  {unlinking === a.id ? 'Unlinking…' : 'Unlink'}
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </div>

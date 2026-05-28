@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.deps import get_current_user
-from db.models import LinkedAccount, PasswordResetToken, User
+from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from limiter import limiter
 from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 from services.email import send_reset_email
@@ -268,6 +269,43 @@ async def get_accounts(
             for a in accounts
         ]
     }
+
+
+@router.delete("/accounts/{account_id}")
+async def unlink_account(
+    account_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(LinkedAccount).where(
+            LinkedAccount.id == account_id,
+            LinkedAccount.user_id == current_user.id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    try:
+        # Soft-delete Plaid-sourced subscriptions — manual ones are unaffected
+        subs_result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.source == "plaid",
+                Subscription.is_active == True,  # noqa: E712
+            )
+        )
+        for sub in subs_result.scalars().all():
+            sub.is_active = False
+
+        await db.delete(account)
+        await db.commit()
+        return {"message": "Account unlinked"}
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to unlink account %s", account_id)
+        raise HTTPException(status_code=500, detail="Failed to unlink account")
 
 
 @router.get("/me")

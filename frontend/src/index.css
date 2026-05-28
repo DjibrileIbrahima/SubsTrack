@@ -626,6 +626,21 @@ body {
 
 .settings-value { font-size: 14px; color: var(--text-muted); }
 
+.settings-account-row { justify-content: space-between; }
+
+.unlink-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+  transition: background var(--transition), color var(--transition);
+}
+.unlink-btn:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.unlink-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .settings-phone-row {
   display: flex;
   flex-direction: column;
