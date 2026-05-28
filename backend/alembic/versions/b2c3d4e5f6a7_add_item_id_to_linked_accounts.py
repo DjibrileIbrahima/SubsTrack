@@ -19,11 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "linked_accounts",
-        sa.Column("item_id", sa.String(256), nullable=True),
+    op.execute(
+        "ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS item_id VARCHAR(256)"
     )
-    op.create_index("ix_linked_accounts_item_id", "linked_accounts", ["item_id"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_linked_accounts_item_id ON linked_accounts (item_id)"
+    )
 
 
 def downgrade() -> None:
