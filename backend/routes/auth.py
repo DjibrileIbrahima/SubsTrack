@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import httpx
@@ -12,8 +13,6 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from datetime import datetime, timedelta, timezone
 
 from db.database import get_db
 from db.deps import get_current_user
@@ -167,7 +166,7 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest, db: Asy
     if not user or not user.hashed_password:
         return {"message": "If that email exists, a reset link has been sent"}
     token = secrets.token_urlsafe(32)
-    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    expires = datetime.now(UTC) + timedelta(hours=1)
     db.add(PasswordResetToken(user_id=user.id, token=token, expires_at=expires))
     await db.commit()
     reset_url = f"{FRONTEND_URL}?token={token}"
@@ -189,7 +188,7 @@ async def reset_password(request: Request, body: ResetPasswordRequest, db: Async
         select(PasswordResetToken).where(PasswordResetToken.token == body.token)
     )
     reset = result.scalar_one_or_none()
-    if not reset or reset.used or reset.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+    if not reset or reset.used or reset.expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
         raise HTTPException(status_code=400, detail="Invalid or expired reset link")
     user_result = await db.execute(select(User).where(User.id == reset.user_id))
     user = user_result.scalar_one()
