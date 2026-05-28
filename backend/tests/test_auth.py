@@ -2,14 +2,22 @@
 Tests for /api/auth/* routes.
 
 Covers: register, login, logout, /me, Google OAuth flow,
-Plaid link-token, token exchange, and linked accounts.
+Plaid link-token, token exchange, linked accounts,
+forgot-password, and reset-password.
 """
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from db.models import LinkedAccount, User
+from sqlalchemy import select
+
+from db.models import LinkedAccount, PasswordResetToken, User
 from services.encryption import decrypt
 from services.encryption import encrypt as _encrypt
+
+
+def _utcnow():
+    return datetime.now(UTC).replace(tzinfo=None)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -220,7 +228,6 @@ class TestGoogleCallback:
             )
 
         assert r.status_code in (302, 307)
-        from sqlalchemy import select
         result = await db.execute(select(User).where(User.email == "newgoogle@example.com"))
         assert result.scalar_one_or_none() is not None
 
@@ -302,7 +309,6 @@ class TestExchangeToken:
         assert r.status_code == 200
         assert "connected" in r.json()["message"].lower()
 
-        from sqlalchemy import select
         result = await db.execute(select(LinkedAccount).where(LinkedAccount.user_id == test_user.id))
         account = result.scalar_one_or_none()
         assert account is not None
@@ -356,3 +362,125 @@ class TestGetAccounts:
     async def test_get_accounts_unauthenticated(self, client):
         r = await client.get("/api/auth/accounts")
         assert r.status_code == 401
+
+
+# ─── POST /api/auth/forgot-password ──────────────────────────────────────────
+
+class TestForgotPassword:
+    async def test_known_user_triggers_email(self, client, test_user):
+        with patch("routes.auth.send_reset_email", new_callable=AsyncMock) as mock_email:
+            mock_email.return_value = True
+            r = await client.post("/api/auth/forgot-password", json={"email": test_user.email})
+        assert r.status_code == 200
+        mock_email.assert_called_once()
+        _, reset_url = mock_email.call_args.args
+        assert "?token=" in reset_url
+
+    async def test_unknown_email_returns_200_no_email(self, client):
+        """Always 200 for unknown emails — prevents user enumeration."""
+        with patch("routes.auth.send_reset_email", new_callable=AsyncMock) as mock_email:
+            r = await client.post("/api/auth/forgot-password", json={"email": "nobody@example.com"})
+        assert r.status_code == 200
+        mock_email.assert_not_called()
+
+    async def test_oauth_only_user_returns_200_no_email(self, client, db):
+        """OAuth users have no hashed_password — no reset email should be sent."""
+        oauth_user = User(email="oauth@example.com", hashed_password=None)
+        db.add(oauth_user)
+        await db.flush()
+
+        with patch("routes.auth.send_reset_email", new_callable=AsyncMock) as mock_email:
+            r = await client.post("/api/auth/forgot-password", json={"email": "oauth@example.com"})
+        assert r.status_code == 200
+        mock_email.assert_not_called()
+
+    async def test_creates_reset_token_in_db(self, client, test_user, db):
+        with patch("routes.auth.send_reset_email", new_callable=AsyncMock) as mock_email:
+            mock_email.return_value = True
+            await client.post("/api/auth/forgot-password", json={"email": test_user.email})
+
+        result = await db.execute(
+            select(PasswordResetToken).where(PasswordResetToken.user_id == test_user.id)
+        )
+        token_row = result.scalar_one_or_none()
+        assert token_row is not None
+        assert not token_row.used
+        assert token_row.expires_at > _utcnow()
+
+    async def test_invalid_email_format(self, client):
+        r = await client.post("/api/auth/forgot-password", json={"email": "not-an-email"})
+        assert r.status_code == 422
+
+
+# ─── POST /api/auth/reset-password ───────────────────────────────────────────
+
+class TestResetPassword:
+    async def _seed_token(self, db, user_id, token="test-reset-token-xyz", *, expired=False, used=False):
+        expires = (
+            _utcnow() - timedelta(hours=1) if expired else _utcnow() + timedelta(hours=1)
+        )
+        reset = PasswordResetToken(user_id=user_id, token=token, expires_at=expires, used=used)
+        db.add(reset)
+        await db.flush()
+        return reset
+
+    async def test_reset_success(self, client, test_user, db):
+        await self._seed_token(db, test_user.id)
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "newpassword1"},
+        )
+        assert r.status_code == 200
+        assert "updated" in r.json()["message"].lower()
+
+    async def test_new_password_allows_login(self, client, test_user, db):
+        await self._seed_token(db, test_user.id)
+        await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "brandnew123"},
+        )
+        r = await client.post("/api/auth/login", json={"email": test_user.email, "password": "brandnew123"})
+        assert r.status_code == 200
+        assert "access_token" in r.cookies
+
+    async def test_token_marked_used_after_reset(self, client, test_user, db):
+        reset = await self._seed_token(db, test_user.id)
+        await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "newpassword1"},
+        )
+        await db.refresh(reset)
+        assert reset.used is True
+
+    async def test_reuse_token_rejected(self, client, test_user, db):
+        await self._seed_token(db, test_user.id, used=True)
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "newpassword1"},
+        )
+        assert r.status_code == 400
+        assert "invalid" in r.json()["detail"].lower() or "expired" in r.json()["detail"].lower()
+
+    async def test_expired_token_rejected(self, client, test_user, db):
+        await self._seed_token(db, test_user.id, expired=True)
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "newpassword1"},
+        )
+        assert r.status_code == 400
+
+    async def test_invalid_token_rejected(self, client):
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": "nonexistent-token-xyz", "password": "newpassword1"},
+        )
+        assert r.status_code == 400
+
+    async def test_short_password_rejected(self, client, test_user, db):
+        await self._seed_token(db, test_user.id)
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": "test-reset-token-xyz", "password": "short"},
+        )
+        assert r.status_code == 400
+        assert "8 characters" in r.json()["detail"]

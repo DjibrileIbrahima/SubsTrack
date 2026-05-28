@@ -46,6 +46,8 @@ import api, {
   getAlerts,
   markAlertRead,
   deleteAlert,
+  requestPasswordReset,
+  resetPassword,
 } from '../api'
 
 
@@ -179,5 +181,28 @@ describe('updateMe', () => {
     mockInstance.patch.mockResolvedValue({ data: { ...payload } })
     await updateMe(payload)
     expect(mockInstance.patch).toHaveBeenCalledWith('/auth/me', payload)
+  })
+})
+
+describe('requestPasswordReset', () => {
+  it('calls POST /auth/forgot-password with email and returns response data', async () => {
+    const data = { message: 'If that email exists, a reset link has been sent' }
+    mockInstance.post.mockResolvedValue({ data })
+    const result = await requestPasswordReset('user@example.com')
+    expect(mockInstance.post).toHaveBeenCalledWith('/auth/forgot-password', { email: 'user@example.com' })
+    expect(result).toEqual(data)
+  })
+})
+
+describe('resetPassword', () => {
+  it('calls POST /auth/reset-password with token and password and returns response data', async () => {
+    const data = { message: 'Password updated' }
+    mockInstance.post.mockResolvedValue({ data })
+    const result = await resetPassword('reset-token-abc', 'newpassword123')
+    expect(mockInstance.post).toHaveBeenCalledWith('/auth/reset-password', {
+      token: 'reset-token-abc',
+      password: 'newpassword123',
+    })
+    expect(result).toEqual(data)
   })
 })

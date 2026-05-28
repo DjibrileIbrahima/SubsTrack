@@ -44,7 +44,7 @@ export default function Navbar({ onNavigate, currentPage }) {
 
       <div className="navbar-actions">
         {/* Alerts bell */}
-        <button className="bell-btn" onClick={() => { setAlertsOpen(o => !o); setUserOpen(false) }}>
+        <button className="bell-btn" aria-label="Alerts" onClick={() => { setAlertsOpen(o => !o); setUserOpen(false) }}>
           <BellIcon />
           {unread > 0 && <span className="badge">{unread > 9 ? '9+' : unread}</span>}
         </button>

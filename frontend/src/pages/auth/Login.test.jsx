@@ -29,8 +29,8 @@ beforeEach(() => {
   })
 })
 
-function renderLogin(onSwitch = vi.fn()) {
-  return render(<Login onSwitch={onSwitch} />)
+function renderLogin({ onSwitch = vi.fn(), onForgot = vi.fn(), successMessage = null } = {}) {
+  return render(<Login onSwitch={onSwitch} onForgot={onForgot} successMessage={successMessage} />)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,8 +150,25 @@ describe('Login', () => {
 
   it('calls onSwitch when "Sign up" link is clicked', async () => {
     const onSwitch = vi.fn()
-    renderLogin(onSwitch)
+    renderLogin({ onSwitch })
     await userEvent.click(screen.getByRole('button', { name: /sign up/i }))
     expect(onSwitch).toHaveBeenCalled()
+  })
+
+  it('calls onForgot when "Forgot password?" is clicked', async () => {
+    const onForgot = vi.fn()
+    renderLogin({ onForgot })
+    await userEvent.click(screen.getByRole('button', { name: /forgot password/i }))
+    expect(onForgot).toHaveBeenCalled()
+  })
+
+  it('displays successMessage when provided', () => {
+    renderLogin({ successMessage: 'Password updated — sign in with your new password.' })
+    expect(screen.getByText(/password updated/i)).toBeInTheDocument()
+  })
+
+  it('does not display a success message when successMessage is null', () => {
+    renderLogin({ successMessage: null })
+    expect(screen.queryByText(/password updated/i)).not.toBeInTheDocument()
   })
 })
