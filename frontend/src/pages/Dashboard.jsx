@@ -14,11 +14,15 @@ const MONTHLY_FACTOR = {
   yearly: 1 / 12,
 }
 
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function getDueSoon(subs) {
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = localDateStr(new Date())
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() + 7)
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
+  const cutoffStr = localDateStr(cutoff)
   return subs
     .filter(s => s.next_expected && s.next_expected >= todayStr && s.next_expected <= cutoffStr)
     .sort((a, b) => a.next_expected.localeCompare(b.next_expected))

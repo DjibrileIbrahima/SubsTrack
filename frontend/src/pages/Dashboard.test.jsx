@@ -49,9 +49,11 @@ vi.mock('../components/AddManualForm', () => ({
 import { getSavedSubscriptions, syncSubscriptions, getSummary, getAccounts } from '../api'
 import { usePlaid } from '../hooks/usePlaid'
 
-const TODAY = new Date().toISOString().slice(0, 10)
-const IN_3_DAYS = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
-const IN_30_DAYS = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+const localDateStr = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const TODAY = localDateStr(new Date())
+const IN_3_DAYS = localDateStr(new Date(Date.now() + 3 * 86400000))
+const IN_30_DAYS = localDateStr(new Date(Date.now() + 30 * 86400000))
 
 const MOCK_SUBS = [
   { id: 'sub-1', merchant: 'Netflix',  amount: 15.99, frequency: 'monthly', next_expected: IN_3_DAYS, source: 'plaid' },

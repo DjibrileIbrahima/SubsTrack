@@ -484,19 +484,6 @@ body {
 }
 
 /* ── User menu ── */
-.nav-icon-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: var(--radius-sm);
-  display: grid;
-  place-items: center;
-  color: var(--text-muted);
-  transition: background var(--transition), color var(--transition);
-}
-.nav-icon-btn:hover { background: var(--surface-2); color: var(--text); }
-
 .user-btn {
   background: none;
   border: none;
