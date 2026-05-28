@@ -8,17 +8,16 @@ processing: https://plaid.com/docs/api/webhook-verification/
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+
+from services.subscription_sync import sync_subscriptions_for_item
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-TRANSACTIONS_CODES = {
-    "INITIAL_UPDATE",
-    "HISTORICAL_UPDATE",
-    "DEFAULT_UPDATE",
-    "TRANSACTIONS_REMOVED",
-}
+SYNC_TRIGGER_CODES = {"INITIAL_UPDATE", "HISTORICAL_UPDATE", "DEFAULT_UPDATE"}
+
+TRANSACTIONS_CODES = SYNC_TRIGGER_CODES | {"TRANSACTIONS_REMOVED"}
 
 ITEM_CODES = {
     "ERROR",
@@ -29,7 +28,7 @@ ITEM_CODES = {
 
 
 @router.post("/plaid")
-async def plaid_webhook(request: Request):
+async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
     """Entry point for all Plaid webhook events."""
     try:
         body = await request.json()
@@ -46,7 +45,7 @@ async def plaid_webhook(request: Request):
     )
 
     if webhook_type == "TRANSACTIONS":
-        return _handle_transactions(webhook_code, item_id)
+        return _handle_transactions(webhook_code, item_id, background_tasks)
 
     if webhook_type == "ITEM":
         return _handle_item(webhook_code, item_id, body.get("error"))
@@ -57,12 +56,17 @@ async def plaid_webhook(request: Request):
     return {"received": True, "webhook_type": webhook_type, "webhook_code": webhook_code}
 
 
-def _handle_transactions(code: str, item_id: str | None) -> dict:
+def _handle_transactions(code: str, item_id: str | None, background_tasks: BackgroundTasks) -> dict:
     if code not in TRANSACTIONS_CODES:
         logger.debug("Unhandled TRANSACTIONS code: %s", code)
         return {"received": True, "action": "ignored"}
 
-    logger.info("TRANSACTIONS.%s for item %s — new transaction data available", code, item_id)
+    if code in SYNC_TRIGGER_CODES and item_id:
+        background_tasks.add_task(sync_subscriptions_for_item, item_id)
+        logger.info("TRANSACTIONS.%s for item %s — sync enqueued", code, item_id)
+    else:
+        logger.info("TRANSACTIONS.%s for item %s — acknowledged", code, item_id)
+
     return {
         "received": True,
         "webhook_type": "TRANSACTIONS",

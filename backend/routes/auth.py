@@ -241,6 +241,7 @@ async def exchange_public_token(
         account = LinkedAccount(
             user_id=current_user.id,
             access_token=encrypted_token,
+            item_id=response.get("item_id"),
             institution_name=body.institution_name,
         )
         db.add(account)

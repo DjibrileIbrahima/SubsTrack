@@ -1,5 +1,6 @@
 """Tests for POST /api/webhooks/plaid."""
 
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -169,6 +170,64 @@ class TestItemWebhook:
             "item_id": "item-abc",
         })
         assert res.status_code == 200
+
+
+class TestWebhookSyncTrigger:
+    """Verify that transaction update events enqueue a background sync."""
+
+    @pytest.mark.parametrize("code", ["INITIAL_UPDATE", "HISTORICAL_UPDATE", "DEFAULT_UPDATE"])
+    async def test_sync_enqueued_for_update_codes(self, client, code):
+        with patch(
+            "routes.webhooks.sync_subscriptions_for_item",
+            new_callable=AsyncMock,
+        ) as mock_sync:
+            res = await client.post("/api/webhooks/plaid", json={
+                "webhook_type": "TRANSACTIONS",
+                "webhook_code": code,
+                "item_id": "item-sandbox-abc",
+            })
+        assert res.status_code == 200
+        mock_sync.assert_awaited_once_with("item-sandbox-abc")
+
+    async def test_sync_not_enqueued_for_transactions_removed(self, client):
+        with patch(
+            "routes.webhooks.sync_subscriptions_for_item",
+            new_callable=AsyncMock,
+        ) as mock_sync:
+            res = await client.post("/api/webhooks/plaid", json={
+                "webhook_type": "TRANSACTIONS",
+                "webhook_code": "TRANSACTIONS_REMOVED",
+                "item_id": "item-sandbox-abc",
+                "removed_transactions": ["txn-1"],
+            })
+        assert res.status_code == 200
+        mock_sync.assert_not_awaited()
+
+    async def test_sync_not_enqueued_when_item_id_missing(self, client):
+        with patch(
+            "routes.webhooks.sync_subscriptions_for_item",
+            new_callable=AsyncMock,
+        ) as mock_sync:
+            res = await client.post("/api/webhooks/plaid", json={
+                "webhook_type": "TRANSACTIONS",
+                "webhook_code": "DEFAULT_UPDATE",
+            })
+        assert res.status_code == 200
+        mock_sync.assert_not_awaited()
+
+    async def test_sync_not_enqueued_for_item_webhooks(self, client):
+        with patch(
+            "routes.webhooks.sync_subscriptions_for_item",
+            new_callable=AsyncMock,
+        ) as mock_sync:
+            res = await client.post("/api/webhooks/plaid", json={
+                "webhook_type": "ITEM",
+                "webhook_code": "ERROR",
+                "item_id": "item-sandbox-abc",
+                "error": {"error_code": "ITEM_LOGIN_REQUIRED"},
+            })
+        assert res.status_code == 200
+        mock_sync.assert_not_awaited()
 
 
 class TestWebhookCaseInsensitivity:

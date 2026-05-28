@@ -297,7 +297,8 @@ class TestLinkToken:
 class TestExchangeToken:
     async def test_exchange_token_success(self, auth_client, db, test_user):
         exchange_resp = MagicMock()
-        exchange_resp.__getitem__ = lambda self, k: "access-sandbox-abc" if k == "access_token" else None
+        exchange_resp.__getitem__ = lambda self, k: "access-sandbox-abc" if k == "access_token" else "item-sandbox-abc"
+        exchange_resp.get = lambda k, default=None: "access-sandbox-abc" if k == "access_token" else "item-sandbox-abc"
 
         with patch("routes.auth.client") as mock_plaid:
             mock_plaid.item_public_token_exchange.return_value = exchange_resp

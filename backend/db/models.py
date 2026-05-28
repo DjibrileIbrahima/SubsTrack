@@ -32,6 +32,7 @@ class LinkedAccount(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     access_token: Mapped[str] = mapped_column(String(1024), nullable=False)   # always encrypted
+    item_id: Mapped[str] = mapped_column(String(256), nullable=True, index=True)
     institution_name: Mapped[str] = mapped_column(String, nullable=True)
     linked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

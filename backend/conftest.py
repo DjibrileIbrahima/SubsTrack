@@ -150,6 +150,7 @@ async def test_account(db, test_user):
     account = LinkedAccount(
         user_id=test_user.id,
         access_token=_encrypt("access-sandbox-fake-token"),
+        item_id="item-sandbox-test-001",
         institution_name="Test Bank",
     )
     db.add(account)

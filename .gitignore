@@ -1,6 +1,8 @@
 # Secrets — never commit these
 .env
 *.env
+*recovery_code*
+*2fa*
 
 # Python
 __pycache__/
