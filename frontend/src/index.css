@@ -253,6 +253,14 @@ body {
 }
 .delete-btn:hover { color: var(--danger); }
 
+.edit-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); font-size: 14px;
+  padding: 2px 4px; border-radius: 4px;
+  transition: color var(--transition);
+}
+.edit-btn:hover { color: var(--accent); }
+
 /* ── Manual form ── */
 .manual-form {
   background: var(--surface);

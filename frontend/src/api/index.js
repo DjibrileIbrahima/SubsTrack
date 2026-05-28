@@ -38,6 +38,9 @@ export const syncSubscriptions = () =>
 export const addManualSubscription = (data) =>
   api.post('/subscriptions/manual', data).then(r => r.data)
 
+export const updateSubscription = (id, data) =>
+  api.patch(`/subscriptions/${id}`, data).then(r => r.data)
+
 export const deleteSubscription = (id) =>
   api.delete(`/subscriptions/${id}`).then(r => r.data)
 

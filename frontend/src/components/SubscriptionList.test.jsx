@@ -9,9 +9,10 @@ import SubscriptionList from './SubscriptionList'
 
 vi.mock('../api', () => ({
   deleteSubscription: vi.fn(),
+  updateSubscription: vi.fn(),
 }))
 
-import { deleteSubscription } from '../api'
+import { deleteSubscription, updateSubscription } from '../api'
 
 const MOCK_SUBS = [
   {
@@ -107,5 +108,103 @@ describe('SubscriptionList — with subscriptions', () => {
     await userEvent.click(deleteButtons[0])
 
     expect(await screen.findByText(/failed to delete/i)).toBeInTheDocument()
+  })
+})
+
+describe('SubscriptionList — edit subscription', () => {
+  it('renders an edit button for each subscription with an id', () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    expect(editButtons).toHaveLength(2)
+  })
+
+  it('clicking edit button opens the inline edit form', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+    expect(screen.getByPlaceholderText('Merchant')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Amount')).toBeInTheDocument()
+  })
+
+  it('edit form is pre-filled with the subscription current values', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+
+    expect(screen.getByPlaceholderText('Merchant')).toHaveValue('Netflix')
+    expect(screen.getByPlaceholderText('Amount')).toHaveValue(15.99)
+    expect(screen.getByPlaceholderText('Category')).toHaveValue('Entertainment')
+  })
+
+  it('clicking Cancel closes the form without calling updateSubscription', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
+
+    expect(screen.queryByPlaceholderText('Merchant')).not.toBeInTheDocument()
+    expect(updateSubscription).not.toHaveBeenCalled()
+  })
+
+  it('clicking Save calls updateSubscription with correct id and payload, then calls onRefresh and closes form', async () => {
+    updateSubscription.mockResolvedValue({ subscription: { ...MOCK_SUBS[0], merchant: 'Netflix Updated' } })
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={onRefresh} />)
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+
+    const merchantInput = screen.getByPlaceholderText('Merchant')
+    await userEvent.clear(merchantInput)
+    await userEvent.type(merchantInput, 'Netflix Updated')
+
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => {
+      expect(updateSubscription).toHaveBeenCalledWith('sub-1', expect.objectContaining({
+        merchant: 'Netflix Updated',
+        amount: 15.99,
+        frequency: 'monthly',
+      }))
+      expect(onRefresh).toHaveBeenCalled()
+    })
+
+    expect(screen.queryByPlaceholderText('Merchant')).not.toBeInTheDocument()
+  })
+
+  it('shows error message when save fails', async () => {
+    updateSubscription.mockRejectedValue({ response: { data: { detail: 'Update failed' } } })
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    expect(await screen.findByText('Update failed')).toBeInTheDocument()
+  })
+
+  it('shows fallback error when save fails without response detail', async () => {
+    updateSubscription.mockRejectedValue(new Error('Network error'))
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    expect(await screen.findByText(/failed to save/i)).toBeInTheDocument()
+  })
+
+  it('shows Saving... while request is in flight', async () => {
+    let resolve
+    updateSubscription.mockReturnValue(new Promise(r => { resolve = r }))
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+
+    const editButtons = screen.getAllByRole('button', { name: /edit subscription/i })
+    await userEvent.click(editButtons[0])
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    expect(screen.getByText('Saving...')).toBeInTheDocument()
+    resolve({ subscription: MOCK_SUBS[0] })
   })
 })

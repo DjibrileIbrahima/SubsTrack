@@ -268,6 +268,51 @@ async def add_manual_subscription(
         raise HTTPException(status_code=500, detail="Failed to add manual subscription")
 
 
+class UpdateSubscriptionRequest(BaseModel):
+    merchant: str | None = Field(default=None, min_length=1, max_length=100)
+    amount: float | None = Field(default=None, gt=0, le=100_000)
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"] | None = None
+    next_expected: str | None = None
+    category: str | None = Field(default=None, max_length=100)
+
+
+@router.patch("/subscriptions/{subscription_id}")
+async def update_subscription(
+    subscription_id: uuid.UUID,
+    body: UpdateSubscriptionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Subscription).where(
+            Subscription.id == subscription_id,
+            Subscription.user_id == current_user.id,
+            Subscription.is_active == True,  # noqa: E712
+        )
+    )
+    sub = result.scalar_one_or_none()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    if body.merchant is not None:
+        sub.merchant = body.merchant
+    if body.amount is not None:
+        sub.amount = body.amount
+    if body.frequency is not None:
+        sub.frequency = body.frequency
+    if body.next_expected is not None:
+        try:
+            sub.next_expected = datetime.strptime(body.next_expected, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format, expected YYYY-MM-DD")
+    if body.category is not None:
+        sub.category = body.category
+
+    await db.commit()
+    await db.refresh(sub)
+    return {"subscription": serialize_sub(sub)}
+
+
 @router.delete("/subscriptions/{subscription_id}")
 async def delete_subscription(
     subscription_id: uuid.UUID,

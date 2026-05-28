@@ -153,6 +153,134 @@ class TestAddManualSubscription:
         assert r.status_code == 401
 
 
+# ─── PATCH /api/subscriptions/{id} ───────────────────────────────────────────
+
+class TestUpdateSubscription:
+    async def test_update_merchant(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"merchant": "Disney+"},
+        )
+        assert r.status_code == 200
+        assert r.json()["subscription"]["merchant"] == "Disney+"
+
+    async def test_update_amount(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"amount": 19.99},
+        )
+        assert r.status_code == 200
+        assert r.json()["subscription"]["amount"] == 19.99
+
+    async def test_update_frequency(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"frequency": "yearly"},
+        )
+        assert r.status_code == 200
+        assert r.json()["subscription"]["frequency"] == "yearly"
+
+    async def test_update_next_expected(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"next_expected": "2026-01-01"},
+        )
+        assert r.status_code == 200
+        assert r.json()["subscription"]["next_expected"] == "2026-01-01"
+
+    async def test_update_category(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"category": "Software"},
+        )
+        assert r.status_code == 200
+        assert r.json()["subscription"]["category"] == "Software"
+
+    async def test_partial_update_leaves_other_fields_unchanged(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"amount": 99.99},
+        )
+        assert r.status_code == 200
+        body = r.json()["subscription"]
+        assert body["merchant"] == "Netflix"
+        assert body["frequency"] == "monthly"
+
+    async def test_changes_persist_in_db(self, auth_client, test_subscription, db):
+        await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"merchant": "Hulu", "amount": 7.99},
+        )
+        await db.refresh(test_subscription)
+        assert test_subscription.merchant == "Hulu"
+        assert test_subscription.amount == 7.99
+
+    async def test_invalid_frequency_returns_422(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"frequency": "daily"},
+        )
+        assert r.status_code == 422
+
+    async def test_invalid_date_format_returns_400(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"next_expected": "not-a-date"},
+        )
+        assert r.status_code == 400
+        assert "date" in r.json()["detail"].lower()
+
+    async def test_negative_amount_returns_422(self, auth_client, test_subscription):
+        r = await auth_client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"amount": -5.00},
+        )
+        assert r.status_code == 422
+
+    async def test_nonexistent_subscription_returns_404(self, auth_client):
+        import uuid
+        r = await auth_client.patch(
+            f"/api/subscriptions/{uuid.uuid4()}",
+            json={"merchant": "Ghost"},
+        )
+        assert r.status_code == 404
+
+    async def test_cannot_update_another_users_subscription(self, auth_client, test_user2, db):
+        other_sub = Subscription(
+            user_id=test_user2.id, merchant="Hulu",
+            amount=7.99, frequency="monthly", source="manual",
+        )
+        db.add(other_sub)
+        await db.flush()
+
+        r = await auth_client.patch(
+            f"/api/subscriptions/{other_sub.id}",
+            json={"merchant": "Hijacked"},
+        )
+        assert r.status_code == 404
+
+    async def test_cannot_update_inactive_subscription(self, auth_client, test_user, db):
+        inactive = Subscription(
+            user_id=test_user.id, merchant="Cancelled",
+            amount=9.99, frequency="monthly", source="manual", is_active=False,
+        )
+        db.add(inactive)
+        await db.flush()
+
+        r = await auth_client.patch(
+            f"/api/subscriptions/{inactive.id}",
+            json={"merchant": "Updated"},
+        )
+        assert r.status_code == 404
+
+    async def test_unauthenticated_returns_401(self, client, test_subscription):
+        r = await client.patch(
+            f"/api/subscriptions/{test_subscription.id}",
+            json={"merchant": "X"},
+        )
+        assert r.status_code == 401
+
+
 # ─── DELETE /api/subscriptions/{id} ──────────────────────────────────────────
 
 class TestDeleteSubscription:
