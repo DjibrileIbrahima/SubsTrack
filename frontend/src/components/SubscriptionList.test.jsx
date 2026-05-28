@@ -208,3 +208,112 @@ describe('SubscriptionList — edit subscription', () => {
     resolve({ subscription: MOCK_SUBS[0] })
   })
 })
+
+// ── Search ───────────────────────────────────────────────────────────────────
+
+describe('SubscriptionList — search', () => {
+  it('renders a search input', () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    expect(screen.getByRole('searchbox')).toBeInTheDocument()
+  })
+
+  it('filters subscriptions by merchant name', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    await userEvent.type(screen.getByRole('searchbox'), 'Netflix')
+    expect(screen.getByText('Netflix')).toBeInTheDocument()
+    expect(screen.queryByText('Spotify')).not.toBeInTheDocument()
+  })
+
+  it('is case-insensitive', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    await userEvent.type(screen.getByRole('searchbox'), 'netflix')
+    expect(screen.getByText('Netflix')).toBeInTheDocument()
+  })
+
+  it('shows no-results message when nothing matches', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    await userEvent.type(screen.getByRole('searchbox'), 'zzznomatch')
+    expect(screen.getByText(/no subscriptions match/i)).toBeInTheDocument()
+  })
+
+  it('restores full list when query is cleared', async () => {
+    render(<SubscriptionList subscriptions={MOCK_SUBS} onRefresh={vi.fn()} />)
+    const input = screen.getByRole('searchbox')
+    await userEvent.type(input, 'Netflix')
+    await userEvent.clear(input)
+    expect(screen.getByText('Netflix')).toBeInTheDocument()
+    expect(screen.getByText('Spotify')).toBeInTheDocument()
+  })
+})
+
+// ── Sort ─────────────────────────────────────────────────────────────────────
+
+describe('SubscriptionList — sort', () => {
+  const SUBS = [
+    { id: 'a', merchant: 'Zebra', amount: 5, frequency: 'monthly', next_expected: '2025-07-01' },
+    { id: 'b', merchant: 'Apple', amount: 20, frequency: 'monthly', next_expected: '2025-06-01' },
+    { id: 'c', merchant: 'Mango', amount: 10, frequency: 'monthly', next_expected: '2025-08-01' },
+  ]
+
+  function getMerchantOrder() {
+    return screen.getAllByText(/Zebra|Apple|Mango/).map(el => el.textContent)
+  }
+
+  it('sorts by name by default', () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    const names = getMerchantOrder()
+    expect(names).toEqual(['Apple', 'Mango', 'Zebra'])
+  })
+
+  it('sorts by amount descending', async () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /sort by/i }), 'amount-desc')
+    const names = getMerchantOrder()
+    expect(names).toEqual(['Apple', 'Mango', 'Zebra'])
+  })
+
+  it('sorts by amount ascending', async () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /sort by/i }), 'amount-asc')
+    const names = getMerchantOrder()
+    expect(names).toEqual(['Zebra', 'Mango', 'Apple'])
+  })
+
+  it('sorts by due date', async () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /sort by/i }), 'due')
+    const names = getMerchantOrder()
+    expect(names).toEqual(['Apple', 'Zebra', 'Mango'])
+  })
+})
+
+// ── Category filter ───────────────────────────────────────────────────────────
+
+describe('SubscriptionList — category filter', () => {
+  const SUBS = [
+    { id: 'a', merchant: 'Netflix', amount: 15, frequency: 'monthly', category: 'Entertainment' },
+    { id: 'b', merchant: 'Spotify', amount: 10, frequency: 'monthly', category: 'Music' },
+    { id: 'c', merchant: 'Hulu', amount: 12, frequency: 'monthly', category: 'Entertainment' },
+  ]
+
+  it('shows category dropdown when more than one category exists', () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    expect(screen.getByRole('combobox', { name: /filter by category/i })).toBeInTheDocument()
+  })
+
+  it('filters to selected category', async () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /filter by category/i }), 'Entertainment')
+    expect(screen.getByText('Netflix')).toBeInTheDocument()
+    expect(screen.getByText('Hulu')).toBeInTheDocument()
+    expect(screen.queryByText('Spotify')).not.toBeInTheDocument()
+  })
+
+  it('restores all when All categories selected', async () => {
+    render(<SubscriptionList subscriptions={SUBS} onRefresh={vi.fn()} />)
+    const select = screen.getByRole('combobox', { name: /filter by category/i })
+    await userEvent.selectOptions(select, 'Entertainment')
+    await userEvent.selectOptions(select, 'all')
+    expect(screen.getByText('Spotify')).toBeInTheDocument()
+  })
+})
