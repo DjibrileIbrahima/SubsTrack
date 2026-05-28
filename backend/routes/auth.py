@@ -23,6 +23,11 @@ from services.email import send_reset_email
 from services.encryption import encrypt
 from services.jwt import create_access_token
 
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -166,7 +171,7 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest, db: Asy
     if not user or not user.hashed_password:
         return {"message": "If that email exists, a reset link has been sent"}
     token = secrets.token_urlsafe(32)
-    expires = datetime.now(UTC) + timedelta(hours=1)
+    expires = _utcnow() + timedelta(hours=1)
     db.add(PasswordResetToken(user_id=user.id, token=token, expires_at=expires))
     await db.commit()
     reset_url = f"{FRONTEND_URL}?token={token}"
@@ -188,7 +193,7 @@ async def reset_password(request: Request, body: ResetPasswordRequest, db: Async
         select(PasswordResetToken).where(PasswordResetToken.token == body.token)
     )
     reset = result.scalar_one_or_none()
-    if not reset or reset.used or reset.expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+    if not reset or reset.used or reset.expires_at < _utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired reset link")
     user_result = await db.execute(select(User).where(User.id == reset.user_id))
     user = user_result.scalar_one()
