@@ -14,3 +14,9 @@ email-validator
 slowapi
 redis
 groq
+# Observability
+sentry-sdk[fastapi]
+prometheus-fastapi-instrumentator
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-otlp-proto-grpc

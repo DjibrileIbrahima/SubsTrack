@@ -1,9 +1,15 @@
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from observability import configure_logging, init_sentry  # noqa: E402
+
+configure_logging()
+init_sentry()
 
 from arq import cron  # noqa: E402
 from arq.connections import RedisSettings  # noqa: E402
@@ -11,20 +17,42 @@ from arq.connections import RedisSettings  # noqa: E402
 from db.database import AsyncSessionLocal  # noqa: E402
 from services.alert_service import generate_upcoming_alerts  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
 async def run_alert_job(ctx):
+    job_id = ctx.get("job_id", "unknown")
+    start = time.perf_counter()
+    logger.info("job_start", extra={"job": "run_alert_job", "job_id": job_id})
+
     async with AsyncSessionLocal() as db:
         try:
             count = await generate_upcoming_alerts(db)
-            logger.info("Alert job complete: %d new alert(s)", count)
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+            logger.info(
+                "job_complete",
+                extra={
+                    "job": "run_alert_job",
+                    "job_id": job_id,
+                    "alerts_created": count,
+                    "duration_ms": elapsed_ms,
+                },
+            )
         except Exception:
-            logger.exception("Alert job failed")
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+            logger.exception(
+                "job_failed",
+                extra={"job": "run_alert_job", "job_id": job_id, "duration_ms": elapsed_ms},
+            )
+            raise  # Let arq retry (max_tries=3) and Sentry capture the exception
+
+
+async def on_startup(ctx):
+    logger.info("worker_started", extra={"redis_url": os.getenv("REDIS_URL", "redis://localhost:6379")})
+
+
+async def on_shutdown(ctx):
+    logger.info("worker_stopped")
 
 
 class WorkerSettings:
@@ -33,5 +61,7 @@ class WorkerSettings:
     )
     functions = [run_alert_job]
     cron_jobs = [cron(run_alert_job, hour=8, minute=0)]
-    max_tries = 3        # retry a failed job up to 3 times before giving up
-    job_timeout = 300    # cancel any job that runs longer than 5 minutes
+    on_startup = on_startup
+    on_shutdown = on_shutdown
+    max_tries = 3
+    job_timeout = 300
