@@ -1,0 +1,30 @@
+{
+  "family": "substrack-worker",
+  "networkMode": "host",
+  "requiresCompatibilities": ["EC2"],
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "worker",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/substrack-backend:latest",
+      "command": ["python", "-m", "arq", "worker.WorkerSettings"],
+      "essential": true,
+      "secrets": [
+        { "name": "DATABASE_URL",    "valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/DATABASE_URL" },
+        { "name": "REDIS_URL",       "valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/REDIS_URL" },
+        { "name": "ENCRYPTION_KEY",  "valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/ENCRYPTION_KEY" },
+        { "name": "RESEND_API_KEY",  "valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/RESEND_API_KEY" },
+        { "name": "ALERT_FROM_EMAIL","valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/ALERT_FROM_EMAIL" },
+        { "name": "FRONTEND_URL",    "valueFrom": "arn:aws:ssm:<AWS_REGION>:<AWS_ACCOUNT_ID>:parameter/substrack/FRONTEND_URL" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group":         "/ecs/substrack",
+          "awslogs-region":        "<AWS_REGION>",
+          "awslogs-stream-prefix": "worker"
+        }
+      }
+    }
+  ]
+}
