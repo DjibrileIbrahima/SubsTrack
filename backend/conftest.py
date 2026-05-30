@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from db.database import Base, get_db
+from db.deps import get_redis
 from db.models import LinkedAccount, Subscription, User
 from main import app
 from services.encryption import encrypt as _encrypt
@@ -83,6 +84,22 @@ async def db():
 
 # ─── HTTP client fixtures ─────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def mock_redis_dep():
+    """Override the Redis dependency for all tests — no real Redis needed."""
+    mock = AsyncMock()
+    mock.get.return_value = None   # nothing blocklisted by default
+    mock.setex.return_value = True
+    mock.delete.return_value = 1
+
+    async def _override():
+        yield mock
+
+    app.dependency_overrides[get_redis] = _override
+    yield mock
+    app.dependency_overrides.pop(get_redis, None)
+
+
 @pytest_asyncio.fixture
 async def client(db):
     """Unauthenticated ASGI test client wired to the test database."""
@@ -94,7 +111,7 @@ async def client(db):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
-    app.dependency_overrides.clear()
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest_asyncio.fixture

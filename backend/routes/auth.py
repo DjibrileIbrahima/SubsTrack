@@ -17,13 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.deps import get_current_user
+from db.deps import get_current_user, get_redis
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from limiter import limiter
 from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 from services.email import send_reset_email
 from services.encryption import encrypt
-from services.jwt import create_access_token
+from services.jwt import create_access_token, decode_access_token
 from services.mfa import encrypt_secret, generate_totp_secret, get_totp_uri, verify_totp
 
 
@@ -110,7 +110,22 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    token = request.cookies.get("access_token")
+    if token:
+        try:
+            payload = decode_access_token(token)
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                ttl = max(int(exp - datetime.now(UTC).timestamp()), 1)
+                await redis.setex(f"token_blocklist:{jti}", ttl, "1")
+        except HTTPException:
+            pass  # expired token — no need to blocklist
     response.delete_cookie(key="access_token", path="/")
     return {"message": "Logged out"}
 

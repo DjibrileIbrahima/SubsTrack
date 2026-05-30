@@ -16,8 +16,7 @@ class TestCreateAccessToken:
 
     def test_encodes_user_id(self):
         token = create_access_token("my-user-id")
-        user_id = decode_access_token(token)
-        assert user_id == "my-user-id"
+        assert decode_access_token(token)["sub"] == "my-user-id"
 
     def test_different_users_get_different_tokens(self):
         t1 = create_access_token("user-1")
@@ -32,12 +31,16 @@ class TestCreateAccessToken:
         payload = pyjwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
         assert payload["sub"] == "test-user"
         assert "exp" in payload
+        assert "jti" in payload
 
 
 class TestDecodeAccessToken:
-    def test_valid_token_returns_user_id(self):
+    def test_valid_token_returns_payload_with_sub(self):
         token = create_access_token("abc-123")
-        assert decode_access_token(token) == "abc-123"
+        payload = decode_access_token(token)
+        assert payload["sub"] == "abc-123"
+        assert "jti" in payload
+        assert "exp" in payload
 
     def test_expired_token_raises_401(self):
         import os

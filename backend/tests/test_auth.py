@@ -125,6 +125,21 @@ class TestLogout:
         r = await client.post("/api/auth/logout")
         assert r.status_code == 200
 
+    async def test_logout_blocklists_jti(self, auth_client, mock_redis_dep):
+        """Logout must write the token's JTI to Redis so it cannot be reused."""
+        r = await auth_client.post("/api/auth/logout")
+        assert r.status_code == 200
+        mock_redis_dep.setex.assert_called_once()
+        key = mock_redis_dep.setex.call_args[0][0]
+        assert key.startswith("token_blocklist:")
+
+    async def test_revoked_token_is_rejected(self, auth_client, mock_redis_dep):
+        """A token whose JTI is in Redis must be refused on every subsequent request."""
+        mock_redis_dep.get.return_value = "1"  # simulate blocklisted token
+        r = await auth_client.get("/api/auth/me")
+        assert r.status_code == 401
+        assert "revoked" in r.json()["detail"].lower()
+
 
 # ─── GET /api/auth/me ─────────────────────────────────────────────────────────
 
