@@ -40,11 +40,11 @@ async def run_alert_job(ctx):
             )
         except Exception:
             elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+            # logger.exception at ERROR level triggers Sentry capture via LoggingIntegration
             logger.exception(
                 "job_failed",
                 extra={"job": "run_alert_job", "job_id": job_id, "duration_ms": elapsed_ms},
             )
-            raise  # Let arq retry (max_tries=3) and Sentry capture the exception
 
 
 async def on_startup(ctx):
