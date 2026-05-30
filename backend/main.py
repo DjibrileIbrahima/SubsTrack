@@ -26,7 +26,8 @@ from routes.webhooks import router as webhooks_router  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SubsTrack API", version="1.0.0")
+_docs_url = None if os.getenv("DISABLE_DOCS", "true").lower() == "true" else "/docs"
+app = FastAPI(title="SubsTrack API", version="1.0.0", docs_url=_docs_url, redoc_url=None)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
