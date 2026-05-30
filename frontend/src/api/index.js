@@ -60,3 +60,16 @@ export const markAlertRead = (id) =>
 
 export const deleteAlert = (id) =>
   api.delete(`/alerts/${id}`).then(r => r.data)
+
+// MFA
+export const setupMfa = () =>
+  api.get('/auth/mfa/setup').then(r => r.data)
+
+export const enableMfa = (secret, code) =>
+  api.post('/auth/mfa/enable', { secret, code }).then(r => r.data)
+
+export const disableMfa = (code) =>
+  api.post('/auth/mfa/disable', { code }).then(r => r.data)
+
+export const verifyMfa = (mfa_token, code) =>
+  api.post('/auth/mfa/verify', { mfa_token, code }).then(r => r.data)

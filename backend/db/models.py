@@ -18,6 +18,8 @@ class User(Base):
 
     alert_email: Mapped[bool] = mapped_column(Boolean, default=False)
     alert_sms: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    mfa_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     accounts: Mapped[list["LinkedAccount"]] = relationship(back_populates="user", cascade="all, delete")

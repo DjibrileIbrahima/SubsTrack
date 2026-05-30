@@ -6,8 +6,9 @@ from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import httpx
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
@@ -23,6 +24,7 @@ from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 from services.email import send_reset_email
 from services.encryption import encrypt
 from services.jwt import create_access_token
+from services.mfa import encrypt_secret, generate_totp_secret, get_totp_uri, verify_totp
 
 
 def _utcnow() -> datetime:
@@ -39,12 +41,23 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
+_MFA_SESSION_TTL = 300  # seconds — how long the temp token is valid after password check
+_MFA_SESSION_PREFIX = "mfa_session:"
+
+
 def set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key="access_token", value=token,
         httponly=True, secure=COOKIE_SECURE,
         samesite="lax", max_age=COOKIE_MAX_AGE, path="/",
     )
+
+
+def _redis() -> aioredis.Redis:
+    return aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -81,15 +94,117 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
     user = result.scalar_one_or_none()
     if not user or not user.hashed_password or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if user.mfa_enabled and user.mfa_secret:
+        mfa_token = str(uuid.uuid4())
+        r = _redis()
+        try:
+            await r.setex(f"{_MFA_SESSION_PREFIX}{mfa_token}", _MFA_SESSION_TTL, str(user.id))
+        finally:
+            await r.aclose()
+        return JSONResponse(status_code=202, content={"mfa_required": True, "mfa_token": mfa_token})
+
     token = create_access_token(str(user.id))
     set_auth_cookie(response, token)
     return {"email": user.email}
+
 
 @router.post("/logout")
 async def logout(response: Response):
     response.delete_cookie(key="access_token", path="/")
     return {"message": "Logged out"}
 
+
+# ── MFA ───────────────────────────────────────────────────────────────────────
+
+@router.get("/mfa/setup")
+async def mfa_setup(current_user: User = Depends(get_current_user)):
+    """Generate a fresh TOTP secret and QR URI. Does not persist anything — call /mfa/enable to confirm."""
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled")
+    secret = generate_totp_secret()
+    uri = get_totp_uri(secret, current_user.email)
+    return {"secret": secret, "uri": uri}
+
+
+class MfaEnableRequest(BaseModel):
+    secret: str
+    code: str = Field(min_length=6, max_length=6)
+
+
+@router.post("/mfa/enable")
+async def mfa_enable(
+    body: MfaEnableRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Verify the TOTP code against the provided secret, then persist and activate MFA."""
+    import pyotp
+    if not pyotp.TOTP(body.secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code — check your authenticator app")
+    current_user.mfa_secret = encrypt_secret(body.secret)
+    current_user.mfa_enabled = True
+    await db.commit()
+    logger.info("mfa_enabled", extra={"user_id": str(current_user.id)})
+    return {"mfa_enabled": True}
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+@router.post("/mfa/disable")
+async def mfa_disable(
+    body: MfaCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.mfa_enabled or not current_user.mfa_secret:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if not verify_totp(current_user.mfa_secret, body.code):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    current_user.mfa_enabled = False
+    current_user.mfa_secret = None
+    await db.commit()
+    logger.info("mfa_disabled", extra={"user_id": str(current_user.id)})
+    return {"mfa_enabled": False}
+
+
+class MfaVerifyRequest(BaseModel):
+    mfa_token: str
+    code: str = Field(min_length=6, max_length=6)
+
+
+@router.post("/mfa/verify")
+@limiter.limit("10/minute")
+async def mfa_verify(
+    request: Request,
+    response: Response,
+    body: MfaVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Second step of MFA login. Validates the temp token from Redis and the TOTP code."""
+    r = _redis()
+    try:
+        user_id_str = await r.get(f"{_MFA_SESSION_PREFIX}{body.mfa_token}")
+        if not user_id_str:
+            raise HTTPException(status_code=401, detail="MFA session expired — please log in again")
+        result = await db.execute(select(User).where(User.id == uuid.UUID(user_id_str)))
+        user = result.scalar_one_or_none()
+        if not user or not user.mfa_enabled or not user.mfa_secret:
+            raise HTTPException(status_code=401, detail="Invalid MFA session")
+        if not verify_totp(user.mfa_secret, body.code):
+            raise HTTPException(status_code=400, detail="Invalid code")
+        await r.delete(f"{_MFA_SESSION_PREFIX}{body.mfa_token}")
+    finally:
+        await r.aclose()
+
+    token = create_access_token(str(user.id))
+    set_auth_cookie(response, token)
+    return {"email": user.email}
+
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
 
 @router.get("/google")
 async def google_login():
@@ -159,6 +274,9 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
     response.delete_cookie(key="oauth_state", path="/")
     return response
 
+
+# ── Password reset ────────────────────────────────────────────────────────────
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -168,7 +286,6 @@ class ForgotPasswordRequest(BaseModel):
 async def forgot_password(request: Request, body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    # Always return 200 to prevent email enumeration
     if not user or not user.hashed_password:
         return {"message": "If that email exists, a reset link has been sent"}
     token = secrets.token_urlsafe(32)
@@ -204,6 +321,8 @@ async def reset_password(request: Request, body: ResetPasswordRequest, db: Async
     return {"message": "Password updated"}
 
 
+# ── Plaid ─────────────────────────────────────────────────────────────────────
+
 class PublicTokenRequest(BaseModel):
     public_token: str
     institution_name: str = "Unknown Bank"
@@ -213,14 +332,14 @@ class PublicTokenRequest(BaseModel):
 @limiter.limit("20/minute")
 async def create_link_token(request: Request, current_user: User = Depends(get_current_user)):
     try:
-        request = LinkTokenCreateRequest(
+        req = LinkTokenCreateRequest(
             products=PLAID_PRODUCTS,
             client_name="SubsTrack",
             country_codes=PLAID_COUNTRY_CODES,
             language="en",
             user=LinkTokenCreateRequestUser(client_user_id=str(current_user.id)),
         )
-        response = client.link_token_create(request)
+        response = client.link_token_create(req)
         return {"link_token": response["link_token"]}
     except Exception:
         logger.exception("Failed to create Plaid link token")
@@ -236,8 +355,8 @@ async def exchange_public_token(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        request = ItemPublicTokenExchangeRequest(public_token=body.public_token)
-        response = client.item_public_token_exchange(request)
+        req = ItemPublicTokenExchangeRequest(public_token=body.public_token)
+        response = client.item_public_token_exchange(req)
         encrypted_token = encrypt(response["access_token"])
         account = LinkedAccount(
             user_id=current_user.id,
@@ -288,7 +407,6 @@ async def unlink_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     try:
-        # Soft-delete Plaid-sourced subscriptions — manual ones are unaffected
         subs_result = await db.execute(
             select(Subscription).where(
                 Subscription.user_id == current_user.id,
@@ -308,15 +426,22 @@ async def unlink_account(
         raise HTTPException(status_code=500, detail="Failed to unlink account")
 
 
+# ── Profile ───────────────────────────────────────────────────────────────────
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "alert_email": user.alert_email,
+        "alert_sms": user.alert_sms,
+        "phone": user.phone,
+        "mfa_enabled": user.mfa_enabled,
+    }
+
+
 @router.get("/me")
 async def get_me(current_user: User = Depends(get_current_user)):
-    return {
-        "id": str(current_user.id),
-        "email": current_user.email,
-        "alert_email": current_user.alert_email,
-        "alert_sms": current_user.alert_sms,
-        "phone": current_user.phone,
-    }
+    return _serialize_user(current_user)
 
 
 class UpdateMeRequest(BaseModel):
@@ -339,10 +464,4 @@ async def update_me(
         current_user.phone = body.phone
     await db.commit()
     await db.refresh(current_user)
-    return {
-        "id": str(current_user.id),
-        "email": current_user.email,
-        "alert_email": current_user.alert_email,
-        "alert_sms": current_user.alert_sms,
-        "phone": current_user.phone,
-    }
+    return _serialize_user(current_user)
