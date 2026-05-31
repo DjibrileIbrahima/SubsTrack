@@ -5,69 +5,65 @@ A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 ## Tech Stack
 - **Backend:** FastAPI + SQLAlchemy (async) + Alembic + ARQ
 - **Frontend:** React + Vite + Recharts
-- **Database:** PostgreSQL (Docker)
-- **Cache / Rate limiting:** Redis (Docker)
-- **Banking:** Plaid API (Sandbox)
+- **Database:** PostgreSQL 16 (Docker)
+- **Cache / Queue / Revocation:** Redis 7 (Docker, AOF persistence)
+- **Banking:** Plaid API (Sandbox → Production)
 - **Email alerts:** Resend API
+- **Observability:** Sentry · Prometheus · OpenTelemetry · structured JSON logging
 
 ## Project Structure
 ```
 SubsTrack/
-├── dev.sh                         # One-command dev launcher (backend + worker + frontend)
-├── docker-compose.yml             # Production (all containers)
-├── docker-compose.dev.yml         # Development (DB + Redis only)
-├── .gitignore
+├── dev.sh                          # One-command dev launcher
+├── docker-compose.yml              # Production (all 5 containers)
+├── docker-compose.dev.yml          # Development (DB + Redis only)
+├── .github/workflows/test.yml      # CI/CD pipeline
 ├── backend/
-│   ├── Dockerfile
-│   ├── main.py
+│   ├── main.py                     # App factory, middleware wiring
+│   ├── observability.py            # Logging, Sentry, OpenTelemetry setup
+│   ├── middleware.py               # Request logging, audit events, latency
+│   ├── limiter.py                  # slowapi rate limiter
+│   ├── worker.py                   # ARQ WorkerSettings + alert cron job
 │   ├── plaid_client.py
-│   ├── limiter.py                 # Shared slowapi/Redis rate limiter
-│   ├── worker.py                  # ARQ WorkerSettings + cron job (alert generation)
 │   ├── requirements.txt
-│   ├── alembic.ini
-│   ├── .env.example
 │   ├── db/
-│   │   ├── database.py
+│   │   ├── database.py             # Engine + slow query detection
 │   │   ├── models.py
-│   │   └── deps.py
+│   │   └── deps.py                 # get_current_user, get_redis (JWT blocklist)
 │   ├── routes/
-│   │   ├── auth.py                # Register, login, Google OAuth, Plaid link
-│   │   ├── transactions.py        # Transactions, subscriptions, manual CRUD
-│   │   └── alerts.py             # In-app alerts CRUD + manual trigger
+│   │   ├── auth.py                 # Register, login, MFA, Google OAuth, Plaid, profile
+│   │   ├── transactions.py         # Subscriptions CRUD + sync
+│   │   ├── alerts.py               # In-app alerts CRUD
+│   │   ├── webhooks.py             # Plaid webhook receiver
+│   │   └── health.py               # /health, /health/ready
 │   ├── services/
-│   │   ├── encryption.py          # Fernet encryption for Plaid tokens
+│   │   ├── encryption.py           # Fernet encryption for tokens + secrets
+│   │   ├── jwt.py                  # JWT create/decode with jti claim
+│   │   ├── mfa.py                  # TOTP secret generation + verification
 │   │   ├── subscription_detector.py
 │   │   ├── subscription_pipeline.py
-│   │   ├── alert_service.py       # Alert generation + email dispatch
-│   │   └── email.py              # Resend API integration
-│   ├── tests/
-│   │   ├── test_subscription_detector.py
-│   │   └── test_alerts.sh
-│   └── alembic/
-│       ├── env.py
-│       └── versions/
+│   │   ├── subscription_sync.py
+│   │   ├── alert_service.py
+│   │   ├── email.py                # Resend integration
+│   │   └── webhook_verification.py
+│   ├── tests/                      # 341 tests, runs against in-memory SQLite
+│   └── alembic/versions/
 └── frontend/
-    ├── Dockerfile
     ├── nginx.conf
-    ├── index.html
-    ├── package.json
-    ├── vite.config.js
     └── src/
-        ├── App.jsx
-        ├── main.jsx
-        ├── index.css
         ├── api/index.js
+        ├── context/AuthContext.jsx
         ├── hooks/usePlaid.js
         ├── pages/
         │   ├── Dashboard.jsx
-        │   ├── Login.jsx
-        │   └── Register.jsx
+        │   ├── Settings.jsx        # Notifications, MFA, linked banks
+        │   └── auth/               # Login, Register, ForgotPassword, ResetPassword
         └── components/
-            ├── Navbar.jsx          # Bell icon, unread alert badge, user menu
+            ├── Navbar.jsx          # Bell icon, unread badge, user menu
             ├── SubscriptionList.jsx
             ├── AddManualForm.jsx
-            ├── SpendingChart.jsx   # Monthly bar chart
-            └── CategoryChart.jsx   # Spend by category (horizontal bars)
+            ├── SpendingChart.jsx
+            └── CategoryChart.jsx
 ```
 
 ## Features
@@ -77,30 +73,32 @@ SubsTrack/
 - **Monthly spending chart** — bar chart of transaction spend over time
 - **Category breakdown** — horizontal bar chart, monthly equivalent per category
 - **Due Soon** — subscriptions renewing within 7 days, urgent highlighting for today/tomorrow
-- **Manual subscriptions** — add, list, and delete without a bank connection
+- **Manual subscriptions** — add, edit, and delete without a bank connection
 
 ### Subscriptions
 - Plaid bank link to auto-detect recurring charges
-- Subscription pipeline with confidence scoring and frequency inference (weekly/biweekly/monthly/quarterly/yearly)
+- Subscription pipeline with confidence scoring and frequency inference (weekly / biweekly / monthly / quarterly / yearly)
 - Source badge (Bank vs Manual) and detection metadata
 
 #### Detection pipeline details
-- **Amount clustering** — multi-product merchants (e.g. Apple Music vs Apple TV+) are split into separate subscriptions based on amount proximity rather than grouped as one noisy entry
-- **Calendar-aware renewal dates** — monthly/quarterly/yearly `next_expected` uses proper month arithmetic (Jan 31 + 1 month = Feb 28, not Mar 2)
-- **Relative interval scoring** — consistency thresholds scale with the billing interval, so a ±2-day drift on a yearly subscription isn't penalised the same as on a weekly one
-- **Continuous frequency ranges** — no dead zones; a 45-day average interval maps to quarterly rather than being discarded
-- **Word-boundary hint matching** — merchants like "Gaston Bistro" or "Watercolor App" are no longer falsely penalised by the GAS/WATER non-subscription filter
-- **Rules-only acceptance at 0.65** — when no AI model is configured, candidates above 0.65 confidence are accepted directly instead of being silently dropped
+- **Amount clustering** — multi-product merchants split into separate subscriptions by amount proximity
+- **Calendar-aware renewal dates** — proper month arithmetic (Jan 31 + 1 month = Feb 28, not Mar 2)
+- **Relative interval scoring** — drift thresholds scale with billing interval
+- **Continuous frequency ranges** — no dead zones; 45-day average maps to quarterly
+- **Word-boundary hint matching** — merchants like "Gaston Bistro" no longer falsely penalised by GAS filter
+- **Rules-only fallback** — candidates above 0.65 confidence accepted without AI when no model is configured
 
 ### Alerts
 - In-app alerts with unread badge in navbar
-- Alerts generated automatically daily via **ARQ** worker (Redis-backed, multi-instance safe) and on-demand via API
+- Alerts generated daily via ARQ worker (Redis-backed, multi-instance safe) and on-demand via API
 - Email alerts via Resend when subscriptions are due within 7 days
-- Per-user opt-in for email alerts (`alert_email` preference)
+- Per-user opt-in for email and SMS alerts
 
 ### Auth
 - Email/password registration and login (bcrypt)
 - Google OAuth 2.0
+- **TOTP two-factor authentication** — Google Authenticator, Authy, or any TOTP app; enabled/disabled in Settings
+- Password reset via email token
 - HttpOnly cookie sessions (7-day expiry)
 
 ---
@@ -109,54 +107,83 @@ SubsTrack/
 
 ### Authentication & sessions
 - Passwords hashed with **bcrypt**
-- Auth stored in an **HttpOnly, SameSite=lax** cookie — never readable by JavaScript
-- `COOKIE_SECURE` defaults to `true`; set it to `false` only in local dev (no HTTPS)
-- JWT tokens signed with HS256; secret loaded from `JWT_SECRET` env var — app refuses to start if unset
-- Google OAuth login protected against CSRF with a **cryptographically random `state` parameter** verified on callback
-- OAuth-only accounts (no password) are explicitly rejected at the password-login endpoint
+- Auth stored in an **HttpOnly, Secure, SameSite=lax** cookie — unreadable by JavaScript
+- JWT tokens carry a **`jti` (JWT ID)** claim unique to each login
+- **JWT revocation** — logout writes `token_blocklist:{jti}` to Redis with TTL equal to the token's remaining lifetime; every authenticated request checks the blocklist before hitting the database, so a stolen token is invalidated the moment the user logs out
+- **TOTP MFA** — secrets encrypted at rest with Fernet before storage; QR code setup flow in Settings; two-step login when enabled
+- Google OAuth protected against CSRF with a cryptographically random `state` parameter
+- OAuth-only accounts are explicitly rejected at the password-login endpoint
+
+### API
+- `/docs` and `/redoc` **disabled in production** (set `DISABLE_DOCS=false` in local `.env` to restore Swagger UI)
+- `/metrics` not exposed externally — Prometheus scrape only
+- Backend port not exposed in Docker — all traffic goes through nginx
 
 ### Transport & headers
-- nginx serves the following security headers on every response:
-  - `X-Frame-Options: DENY` — blocks clickjacking
-  - `X-Content-Type-Options: nosniff` — disables MIME sniffing
-  - `Referrer-Policy: strict-origin-when-cross-origin`
-  - `Content-Security-Policy` — whitelists sources, blocks inline scripts and object embeds
-  - `Permissions-Policy` — disables camera, microphone, and geolocation
-  - `server_tokens off` — hides nginx version
-- CORS restricted to origins in `CORS_ORIGINS` with an explicit header whitelist
+- nginx security headers on every response: `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`, `server_tokens off`
+- CORS restricted to origins in `CORS_ORIGINS`
+- Nginx upstream DNS resolved dynamically via Docker's embedded resolver — no 502s after backend restarts
 
 ### Data protection
-- Plaid `access_token` values encrypted at rest with **Fernet** (AES-128-CBC + HMAC-SHA256); key loaded from `ENCRYPTION_KEY` env var — app refuses to start if unset
-- Backend API port **not** exposed in Docker — all external traffic goes through nginx
+- Plaid `access_token` values and TOTP secrets encrypted at rest with **Fernet** (AES-128-CBC + HMAC-SHA256)
+- `ENCRYPTION_KEY` and `JWT_SECRET` are required — the app refuses to start if unset
 
 ### Rate limiting
 | Endpoint | Limit |
 |---|---|
 | `POST /api/auth/register` | 5 req/min |
 | `POST /api/auth/login` | 10 req/min |
+| `POST /api/auth/mfa/verify` | 10 req/min |
+| `POST /api/auth/forgot-password` | 3 req/min |
 | `POST /api/auth/link-token` | 20 req/min |
 | `POST /api/auth/exchange-token` | 10 req/min |
-| `POST /api/subscriptions/manual` | 30 req/min |
-| `POST /api/alerts/generate` | 5 req/min |
 
-Enforced by **slowapi** backed by **Redis** — limits are shared across instances and survive restarts.
+Enforced by **slowapi** backed by **Redis** — shared across instances, survives restarts.
 
 ### Input validation
-- All query parameters validated by FastAPI/Pydantic — e.g. `?days` clamped to 1–365
-- Manual subscription fields validated: merchant 1–100 chars, amount > 0 and ≤ 100,000, category ≤ 100 chars
+- All request bodies validated by Pydantic; query parameters clamped at route level
 - 500 handlers return generic messages; full errors logged server-side only
 
 ### Secrets management
 - `.env` is git-ignored; **never commit real secrets**
-- `POSTGRES_PASSWORD` is required at compose startup — Docker will refuse to start if unset
-- Generate the encryption key with:
+- `POSTGRES_PASSWORD` is required at compose startup — Docker refuses to start if unset
+- Generate the encryption key:
   ```bash
   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   ```
-- Generate a JWT secret with:
+- Generate a JWT secret:
   ```bash
   python -c "import secrets; print(secrets.token_hex(32))"
   ```
+
+---
+
+## Observability
+
+| Signal | Tool | Activation |
+|---|---|---|
+| Structured JSON logs | Custom formatter | `LOG_FORMAT=json` |
+| Request logs + audit trail | `RequestLoggingMiddleware` | Always on |
+| Slow query warnings | SQLAlchemy event listeners | `SLOW_QUERY_MS` (default 200 ms) |
+| Exception tracking | Sentry | `SENTRY_DSN` |
+| Metrics (HTTP, latency, errors) | Prometheus | Always on at `/metrics` |
+| Distributed tracing | OpenTelemetry + OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| Liveness / readiness | `/health`, `/health/ready` | Always on |
+
+Audit events (auth, financial operations, account changes) are tagged `audit=true` in structured log output.
+
+---
+
+## CI/CD
+
+Every push to `master` runs:
+
+1. **Ruff** — Python linting
+2. **Bandit** — Python security scan
+3. **Pytest** — 341 backend tests (in-memory SQLite, mocked Redis + Plaid)
+4. **Vitest** — Frontend unit tests
+5. **Vite build** — Production build verification
+6. **SSH deploy** — Pull, rebuild containers, run Alembic migrations (only on `master` push, all jobs must pass)
 
 ---
 
@@ -164,63 +191,69 @@ Enforced by **slowapi** backed by **Redis** — limits are shared across instanc
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/YOUR_USERNAME/SubsTrack.git
+git clone https://github.com/DjibrileIbrahima/SubsTrack.git
 cd SubsTrack
 ```
 
 ### 2. Set up environment variables
 ```bash
 cp backend/.env.example backend/.env
-# Fill in your keys — see the Security section for generation commands
+# Fill in the required values below
 ```
 
-The following values are **required** — the app or Docker will refuse to start without them:
+**Required** — app or Docker refuses to start without these:
 
 | Variable | Description |
 |---|---|
 | `POSTGRES_PASSWORD` | Database password |
-| `ENCRYPTION_KEY` | Fernet key for encrypting Plaid tokens |
+| `ENCRYPTION_KEY` | Fernet key for encrypting tokens |
 | `JWT_SECRET` | Secret for signing auth tokens |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` | From your Plaid dashboard |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | From Google Cloud Console |
-| `REDIS_URL` | Defaults to `redis://localhost:6379` |
 
-Optional:
+**Optional:**
 
-| Variable | Description |
-|---|---|
-| `RESEND_API_KEY` | Resend API key for email alerts (alerts still work in-app without this) |
-| `ALERT_FROM_EMAIL` | Sender address for alert emails (defaults to `alerts@yourdomain.com`) |
-| `COOKIE_SECURE` | Set to `false` for local dev without HTTPS |
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection |
+| `RESEND_API_KEY` | — | Email alerts |
+| `ALERT_FROM_EMAIL` | — | Sender address for alert emails |
+| `COOKIE_SECURE` | `true` | Set `false` for local dev without HTTPS |
+| `DISABLE_DOCS` | `true` | Set `false` to enable Swagger UI |
+| `LOG_FORMAT` | — | Set `json` for structured logs |
+| `SENTRY_DSN` | — | Sentry error tracking |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry tracing |
+| `SLOW_QUERY_MS` | `200` | Slow query warning threshold (ms) |
 
 ### 3. Start everything
 ```bash
 bash dev.sh
 ```
 
-`dev.sh` handles the full startup sequence automatically:
-- Creates a Python virtual environment (`.venv`) if one doesn't exist
-- Installs/syncs `backend/requirements.txt`
+`dev.sh` handles the full startup sequence:
+- Creates `.venv` if missing, installs `requirements.txt`
 - Starts Docker containers (PostgreSQL + Redis)
 - Waits for Postgres to be ready
-- Starts the FastAPI backend with hot reload
-- Starts the ARQ worker (runs cron jobs, purple `[worker]` log prefix)
-- Starts the Vite frontend dev server
-- `Ctrl+C` cleanly shuts down all three processes
+- Starts FastAPI backend with hot reload
+- Starts ARQ worker (cron jobs)
+- Starts Vite frontend dev server
+- `Ctrl+C` cleanly shuts everything down
 
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:5173 |
 | Backend API | http://localhost:8000 |
-| API docs (Swagger) | http://localhost:8000/docs |
+| Swagger UI | http://localhost:8000/docs *(set `DISABLE_DOCS=false`)* |
+| Health | http://localhost:8000/health |
+| Metrics | http://localhost:8000/metrics |
 
 ### Running tests
 ```bash
-# Unit tests (subscription detector — no server needed)
-.venv/Scripts/python.exe -m pytest backend/tests/test_subscription_detector.py -v
+# Backend (341 tests, no server needed)
+cd backend && pytest -v
 
-# API smoke tests (requires running server)
-bash backend/tests/test_alerts.sh
+# Frontend
+cd frontend && npm test -- --run
 ```
 
 ---
@@ -229,50 +262,33 @@ bash backend/tests/test_alerts.sh
 
 ### PostgreSQL port conflict
 
-**Symptom:** Backend starts but every request returns `500`. Logs show:
-```
-asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "substrack"
-```
+**Symptom:** Backend starts but every request returns `500` with an auth error.
 
-**Cause:** A locally installed PostgreSQL is already on port 5432, intercepting the Docker container's connections.
+**Cause:** A local PostgreSQL is already on port 5432.
 
-**Fix — option 1 (recommended): disable the local service**
+**Fix — option 1 (recommended):**
 ```powershell
 Stop-Service postgresql*
 Set-Service -Name postgresql* -StartupType Disabled
 ```
 
-**Fix — option 2: remap Docker to a free port**
-
-In `docker-compose.dev.yml`:
-```yaml
-ports:
-  - "5434:5432"
-```
-And in `backend/.env`:
-```
-DATABASE_URL=postgresql+asyncpg://substrack:substrack_password@localhost:5434/substrack
-```
+**Fix — option 2:** remap Docker to a free port in `docker-compose.dev.yml` and update `DATABASE_URL` accordingly.
 
 ### Stale backend or worker process
 
-If the backend starts but Plaid calls fail with credential errors, a stale process from before `.env` was populated may still be running:
 ```powershell
 taskkill /F /IM uvicorn.exe
-taskkill /F /IM python.exe   # kills any lingering ARQ worker
+taskkill /F /IM python.exe
 ```
 Then restart with `bash dev.sh`.
 
 ### `RuntimeError: JWT_SECRET is not set` on startup
 
-**Cause:** Running `uvicorn main:app` directly from a directory other than `backend/`, or from a shell that hasn't loaded `.env`. The app calls `load_dotenv()` before any imports, so it needs to find `backend/.env` in the working directory.
-
-**Fix:** Always start via `bash dev.sh`, or `cd backend` first if running uvicorn manually.
+Always start via `bash dev.sh`, or `cd backend` first when running uvicorn manually — `load_dotenv()` needs to find `backend/.env` in the working directory.
 
 ---
 
 ## Plaid Sandbox Credentials
-When testing with Plaid Link, use:
 - **Username:** `user_good`
 - **Password:** `pass_good`
 
@@ -280,7 +296,7 @@ When testing with Plaid Link, use:
 
 ## Production Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the full guide covering server setup, SSL, Google OAuth configuration, environment variables, and ongoing maintenance.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full guide — EC2, Docker, SSL, Cloudflare, Google OAuth, AWS Parameter Store, and ongoing maintenance.
 
 ```bash
 docker compose up --build -d
@@ -294,7 +310,10 @@ docker compose up --build -d
 - [x] Phase 3 — Subscription Detection (pipeline, frequency inference, confidence scoring)
 - [x] Phase 4 — React Frontend (dashboard, Plaid Link, manual subscriptions)
 - [x] Phase 5 — Alerts (in-app alerts, email via Resend, scheduled jobs, navbar badge)
-- [x] Phase 6 — Dashboard Polish (annual spend, due-soon section, category chart, empty states)
-- [ ] Phase 7 — Deployment (production Docker, CI/CD)
-- [ ] Phase 8 — Auth + Monetization
-- [ ] Redis response caching for `/api/transactions` and `/api/summary` (10-min TTL — both hit Plaid on every request)
+- [x] Phase 6 — Dashboard Polish (annual spend, due-soon, category chart, empty states)
+- [x] Phase 7 — Deployment (EC2, Docker Compose, CI/CD, Cloudflare, AWS Parameter Store)
+- [x] Phase 8 — Security hardening (MFA/TOTP, JWT revocation, Redis AOF persistence, observability, /docs disabled)
+- [ ] PostgreSQL backups to S3
+- [ ] Docker resource limits
+- [ ] Email verification on registration
+- [ ] CSV export
