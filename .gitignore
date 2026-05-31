@@ -19,6 +19,7 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+*.tmp
 
 # Alembic (keep versions, ignore cache)
 alembic/__pycache__/
