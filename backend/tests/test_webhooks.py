@@ -233,6 +233,62 @@ class TestWebhookSyncTrigger:
         mock_sync.assert_not_awaited()
 
 
+class TestItemStatusPersistence:
+    """ITEM webhooks must update LinkedAccount.status so re-auth can be surfaced."""
+
+    async def _post_item(self, client, code, item_id, error=None):
+        payload = {"webhook_type": "ITEM", "webhook_code": code, "item_id": item_id}
+        if error:
+            payload["error"] = error
+        return await client.post("/api/webhooks/plaid", json=payload)
+
+    async def test_login_required_sets_status(self, client, test_account, db):
+        res = await self._post_item(
+            client, "ERROR", test_account.item_id,
+            error={"error_code": "ITEM_LOGIN_REQUIRED"},
+        )
+        assert res.status_code == 200
+        await db.refresh(test_account)
+        assert test_account.status == "login_required"
+
+    async def test_other_item_error_keeps_status(self, client, test_account, db):
+        res = await self._post_item(
+            client, "ERROR", test_account.item_id,
+            error={"error_code": "INSTITUTION_DOWN"},
+        )
+        assert res.status_code == 200
+        await db.refresh(test_account)
+        assert test_account.status == "active"
+
+    async def test_pending_expiration_sets_status(self, client, test_account, db):
+        res = await self._post_item(client, "PENDING_EXPIRATION", test_account.item_id)
+        assert res.status_code == 200
+        await db.refresh(test_account)
+        assert test_account.status == "pending_expiration"
+
+    async def test_permission_revoked_sets_status(self, client, test_account, db):
+        res = await self._post_item(client, "USER_PERMISSION_REVOKED", test_account.item_id)
+        assert res.status_code == 200
+        await db.refresh(test_account)
+        assert test_account.status == "revoked"
+
+    async def test_login_repaired_restores_active(self, client, test_account, db):
+        test_account.status = "login_required"
+        await db.flush()
+
+        res = await self._post_item(client, "LOGIN_REPAIRED", test_account.item_id)
+        assert res.status_code == 200
+        await db.refresh(test_account)
+        assert test_account.status == "active"
+
+    async def test_unknown_item_id_is_harmless(self, client):
+        res = await self._post_item(
+            client, "ERROR", "item-does-not-exist",
+            error={"error_code": "ITEM_LOGIN_REQUIRED"},
+        )
+        assert res.status_code == 200
+
+
 class TestWebhookSignatureVerification:
     """Verify the route enforces signature checks correctly."""
 

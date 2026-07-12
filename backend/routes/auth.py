@@ -10,9 +10,6 @@ import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
-from plaid.model.link_token_create_request import LinkTokenCreateRequest
-from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -22,9 +19,9 @@ from db.database import get_db
 from db.deps import get_current_user, get_redis
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from limiter import limiter
-from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
+from services import plaid_service
 from services.email import send_reset_email
-from services.encryption import encrypt
+from services.encryption import decrypt, encrypt
 from services.jwt import create_access_token, decode_access_token
 from services.mfa import encrypt_secret, generate_totp_secret, get_totp_uri, verify_totp
 
@@ -359,17 +356,42 @@ class PublicTokenRequest(BaseModel):
 @limiter.limit("20/minute")
 async def create_link_token(request: Request, current_user: User = Depends(get_current_user)):
     try:
-        req = LinkTokenCreateRequest(
-            products=PLAID_PRODUCTS,
-            client_name="SubsTrack",
-            country_codes=PLAID_COUNTRY_CODES,
-            language="en",
-            user=LinkTokenCreateRequestUser(client_user_id=str(current_user.id)),
-        )
-        response = client.link_token_create(req)
-        return {"link_token": response["link_token"]}
+        link_token = await plaid_service.create_link_token(str(current_user.id))
+        return {"link_token": link_token}
     except Exception:
         logger.exception("Failed to create Plaid link token")
+        raise HTTPException(status_code=500, detail="Failed to create link token")
+
+
+class UpdateLinkTokenRequest(BaseModel):
+    account_id: uuid.UUID
+
+
+@router.post("/link-token/update")
+@limiter.limit("10/minute")
+async def create_update_link_token(
+    request: Request,
+    body: UpdateLinkTokenRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create an update-mode link token so the user can re-authenticate a broken item."""
+    result = await db.execute(
+        select(LinkedAccount).where(
+            LinkedAccount.id == body.account_id,
+            LinkedAccount.user_id == current_user.id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    try:
+        link_token = await plaid_service.create_link_token(
+            str(current_user.id), access_token=decrypt(account.access_token)
+        )
+        return {"link_token": link_token}
+    except Exception:
+        logger.exception("Failed to create update-mode link token for account %s", account.id)
         raise HTTPException(status_code=500, detail="Failed to create link token")
 
 
@@ -382,13 +404,11 @@ async def exchange_public_token(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        req = ItemPublicTokenExchangeRequest(public_token=body.public_token)
-        response = client.item_public_token_exchange(req)
-        encrypted_token = encrypt(response["access_token"])
+        access_token, item_id = await plaid_service.exchange_public_token(body.public_token)
         account = LinkedAccount(
             user_id=current_user.id,
-            access_token=encrypted_token,
-            item_id=response.get("item_id"),
+            access_token=encrypt(access_token),
+            item_id=item_id,
             institution_name=body.institution_name,
         )
         db.add(account)
@@ -411,7 +431,12 @@ async def get_accounts(
     accounts = result.scalars().all()
     return {
         "accounts": [
-            {"id": str(a.id), "institution": a.institution_name, "linked_at": a.linked_at}
+            {
+                "id": str(a.id),
+                "institution": a.institution_name,
+                "linked_at": a.linked_at,
+                "status": a.status,
+            }
             for a in accounts
         ]
     }

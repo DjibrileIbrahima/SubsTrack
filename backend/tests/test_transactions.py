@@ -29,6 +29,14 @@ def _plaid_get_response(*txns):
     return resp
 
 
+def _plaid_page_response(txns, total):
+    """Mock response with an explicit total_transactions, for pagination tests."""
+    resp = MagicMock()
+    data = {"transactions": list(txns), "total_transactions": total}
+    resp.__getitem__ = lambda self, k: data.get(k)
+    return resp
+
+
 # ─── GET /api/subscriptions/saved ────────────────────────────────────────────
 
 class TestGetSavedSubscriptions:
@@ -146,6 +154,30 @@ class TestAddManualSubscription:
         })
         assert r.status_code == 422
 
+    async def test_duplicate_merchant_returns_409(self, auth_client):
+        payload = {"merchant": "Notion", "amount": 8.00, "frequency": "monthly"}
+        r = await auth_client.post("/api/subscriptions/manual", json=payload)
+        assert r.status_code == 200
+        r = await auth_client.post("/api/subscriptions/manual", json=payload)
+        assert r.status_code == 409
+
+    async def test_readding_deleted_subscription_reactivates_it(self, auth_client, db, test_user):
+        r = await auth_client.post("/api/subscriptions/manual", json={
+            "merchant": "Notion", "amount": 8.00, "frequency": "monthly",
+        })
+        sub_id = r.json()["subscription"]["id"]
+        r = await auth_client.delete(f"/api/subscriptions/{sub_id}")
+        assert r.status_code == 200
+
+        r = await auth_client.post("/api/subscriptions/manual", json={
+            "merchant": "Notion", "amount": 10.00, "frequency": "yearly",
+        })
+        assert r.status_code == 200
+        body = r.json()["subscription"]
+        assert body["id"] == sub_id  # same row, reactivated
+        assert body["amount"] == 10.00
+        assert body["frequency"] == "yearly"
+
     async def test_unauthenticated(self, client):
         r = await client.post("/api/subscriptions/manual", json={
             "merchant": "Test", "amount": 5.00, "frequency": "monthly",
@@ -213,7 +245,7 @@ class TestUpdateSubscription:
         )
         await db.refresh(test_subscription)
         assert test_subscription.merchant == "Hulu"
-        assert test_subscription.amount == 7.99
+        assert float(test_subscription.amount) == 7.99
 
     async def test_invalid_frequency_returns_422(self, auth_client, test_subscription):
         r = await auth_client.patch(
@@ -330,7 +362,7 @@ class TestGetTransactions:
 
     async def test_returns_plaid_transactions(self, auth_client, test_account):
         txn = _make_plaid_txn("SPOTIFY", 9.99, "2024-03-01")
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(txn)
             r = await auth_client.get("/api/transactions")
 
@@ -340,7 +372,7 @@ class TestGetTransactions:
         assert body["transactions"][0]["merchant_name"] == "SPOTIFY"
 
     async def test_days_query_param(self, auth_client, test_account):
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response()
             r = await auth_client.get("/api/transactions?days=30")
         assert r.status_code == 200
@@ -353,7 +385,7 @@ class TestGetTransactions:
         assert r.status_code == 422
 
     async def test_plaid_error_returns_500(self, auth_client, test_account):
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.side_effect = Exception("Plaid timeout")
             r = await auth_client.get("/api/transactions")
         assert r.status_code == 500
@@ -362,8 +394,46 @@ class TestGetTransactions:
         r = await client.get("/api/transactions")
         assert r.status_code == 401
 
+    async def test_paginates_past_500_transactions(self, auth_client, test_account):
+        """More than one page of Plaid results must all be fetched, not truncated."""
+        page1 = [_make_plaid_txn(f"MERCHANT-{i}", 5.0, "2024-01-15") for i in range(500)]
+        page2 = [_make_plaid_txn(f"MERCHANT-{i}", 5.0, "2024-01-16") for i in range(500, 620)]
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_get.side_effect = [
+                _plaid_page_response(page1, total=620),
+                _plaid_page_response(page2, total=620),
+            ]
+            r = await auth_client.get("/api/transactions")
 
-# ─── GET /api/subscriptions (sync) ───────────────────────────────────────────
+        assert r.status_code == 200
+        assert r.json()["total"] == 620
+        assert mock_plaid.transactions_get.call_count == 2
+
+    async def test_fetches_all_linked_accounts(self, auth_client, test_account, db, test_user):
+        """Transactions from every linked bank must be merged, not just the first."""
+        from db.models import LinkedAccount
+        from services.encryption import encrypt
+        db.add(LinkedAccount(
+            user_id=test_user.id,
+            access_token=encrypt("access-sandbox-second-token"),
+            item_id="item-sandbox-test-002",
+            institution_name="Second Bank",
+        ))
+        await db.flush()
+
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_get.side_effect = [
+                _plaid_get_response(_make_plaid_txn("NETFLIX", 15.99, "2024-01-15")),
+                _plaid_get_response(_make_plaid_txn("SPOTIFY", 9.99, "2024-01-20")),
+            ]
+            r = await auth_client.get("/api/transactions")
+
+        assert r.status_code == 200
+        merchants = {t["merchant_name"] for t in r.json()["transactions"]}
+        assert merchants == {"NETFLIX", "SPOTIFY"}
+
+
+# ─── POST /api/subscriptions/sync ────────────────────────────────────────────
 
 class TestSyncSubscriptions:
     async def test_sync_detects_and_saves_subscriptions(self, auth_client, test_account, db, test_user):
@@ -372,9 +442,9 @@ class TestSyncSubscriptions:
             _make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01")
             for m in range(1, 5)
         ]
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
-            r = await auth_client.get("/api/subscriptions")
+            r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
         subs = r.json()["subscriptions"]
@@ -390,9 +460,9 @@ class TestSyncSubscriptions:
         await db.flush()
 
         txns = [_make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01") for m in range(1, 5)]
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
-            r = await auth_client.get("/api/subscriptions")
+            r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
         updated = next(s for s in r.json()["subscriptions"] if s["merchant"] == "Netflix")
@@ -408,20 +478,20 @@ class TestSyncSubscriptions:
         await db.flush()
 
         txns = [_make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01") for m in range(1, 5)]
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
-            r = await auth_client.get("/api/subscriptions")
+            r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
         subs = r.json()["subscriptions"]
         assert all(s["merchant"] != "Netflix" for s in subs)  # still hidden
 
     async def test_sync_requires_bank_account(self, auth_client):
-        r = await auth_client.get("/api/subscriptions")
+        r = await auth_client.post("/api/subscriptions/sync")
         assert r.status_code == 400
 
     async def test_sync_unauthenticated(self, client):
-        r = await client.get("/api/subscriptions")
+        r = await client.post("/api/subscriptions/sync")
         assert r.status_code == 401
 
 
@@ -438,7 +508,7 @@ class TestGetSummary:
             _make_plaid_txn("SPOTIFY", 9.99, "2024-01-20"),
             _make_plaid_txn("NETFLIX", 15.99, "2024-02-15"),
         ]
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
             r = await auth_client.get("/api/summary")
 
@@ -456,7 +526,7 @@ class TestGetSummary:
             _make_plaid_txn("NETFLIX", 15.99, "2024-01-15"),
             _make_plaid_txn("REFUND", -5.00, "2024-01-20"),  # negative
         ]
-        with patch("routes.transactions.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
             r = await auth_client.get("/api/summary")
 

@@ -13,6 +13,9 @@ export default api
 export const getLinkToken = () =>
   api.post('/auth/link-token').then(r => r.data.link_token)
 
+export const getUpdateLinkToken = (account_id) =>
+  api.post('/auth/link-token/update', { account_id }).then(r => r.data.link_token)
+
 export const exchangeToken = (public_token, institution_name) =>
   api.post('/auth/exchange-token', { public_token, institution_name })
 
@@ -36,7 +39,7 @@ export const getSavedSubscriptions = () =>
   api.get('/subscriptions/saved').then(r => r.data)
 
 export const syncSubscriptions = () =>
-  api.get('/subscriptions').then(r => r.data)
+  api.post('/subscriptions/sync').then(r => r.data)
 
 export const addManualSubscription = (data) =>
   api.post('/subscriptions/manual', data).then(r => r.data)

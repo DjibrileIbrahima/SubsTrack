@@ -1,7 +1,19 @@
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +48,8 @@ class LinkedAccount(Base):
     access_token: Mapped[str] = mapped_column(String(1024), nullable=False)   # always encrypted
     item_id: Mapped[str] = mapped_column(String(256), nullable=True, index=True)
     institution_name: Mapped[str] = mapped_column(String, nullable=True)
+    # "active" | "login_required" | "pending_expiration" | "revoked" — driven by ITEM webhooks
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
     linked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="accounts")
@@ -43,11 +57,16 @@ class LinkedAccount(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (
+        # Mirrors the index created in migration c3d4e5f6a7b8 so that schemas
+        # built from metadata (tests) enforce the same constraint as production.
+        Index("ix_subscriptions_user_merchant_source", "user_id", text("lower(merchant)"), "source", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     merchant: Mapped[str] = mapped_column(String, nullable=False)
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     frequency: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=True)
     last_charged: Mapped[date] = mapped_column(Date, nullable=True)

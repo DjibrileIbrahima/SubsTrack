@@ -103,11 +103,11 @@ describe('getSavedSubscriptions', () => {
 })
 
 describe('syncSubscriptions', () => {
-  it('calls GET /subscriptions and returns data', async () => {
+  it('calls POST /subscriptions/sync and returns data', async () => {
     const data = { subscriptions: [], total_monthly_spend: 0 }
-    mockInstance.get.mockResolvedValue({ data })
+    mockInstance.post.mockResolvedValue({ data })
     const result = await syncSubscriptions()
-    expect(mockInstance.get).toHaveBeenCalledWith('/subscriptions')
+    expect(mockInstance.post).toHaveBeenCalledWith('/subscriptions/sync')
     expect(result).toEqual(data)
   })
 })

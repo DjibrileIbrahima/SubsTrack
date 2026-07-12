@@ -12,10 +12,11 @@ import { usePlaid } from './usePlaid'
 // ── Mock API functions ────────────────────────────────────────────────────────
 vi.mock('../api', () => ({
   getLinkToken: vi.fn(),
+  getUpdateLinkToken: vi.fn(),
   exchangeToken: vi.fn(),
 }))
 
-import { getLinkToken, exchangeToken } from '../api'
+import { getLinkToken, getUpdateLinkToken, exchangeToken } from '../api'
 
 // ── Mock window.Plaid ─────────────────────────────────────────────────────────
 const mockPlaidOpen = vi.fn()
@@ -153,5 +154,43 @@ describe('usePlaid', () => {
     })
 
     expect(result.current.error).toBeNull()
+  })
+
+  it('openUpdate fetches an update-mode token and opens Plaid', async () => {
+    getUpdateLinkToken.mockResolvedValue('link-update-token')
+    const onSuccess = vi.fn()
+
+    const { result } = renderHook(() => usePlaid(onSuccess))
+
+    await act(async () => {
+      await result.current.openUpdate('account-123')
+    })
+
+    expect(getUpdateLinkToken).toHaveBeenCalledWith('account-123')
+    expect(mockPlaidCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'link-update-token' })
+    )
+    expect(mockPlaidOpen).toHaveBeenCalled()
+
+    // Update mode has no token exchange — success just notifies the caller
+    const plaidConfig = mockPlaidCreate.mock.calls[0][0]
+    act(() => {
+      plaidConfig.onSuccess()
+    })
+    expect(exchangeToken).not.toHaveBeenCalled()
+    expect(onSuccess).toHaveBeenCalled()
+  })
+
+  it('openUpdate sets error when the token fetch fails', async () => {
+    getUpdateLinkToken.mockRejectedValue(new Error('boom'))
+
+    const { result } = renderHook(() => usePlaid())
+
+    await act(async () => {
+      await result.current.openUpdate('account-123')
+    })
+
+    expect(result.current.error).toBe('Failed to fetch link token')
+    expect(mockPlaidCreate).not.toHaveBeenCalled()
   })
 })

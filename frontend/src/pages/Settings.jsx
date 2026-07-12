@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react'
 import QRCode from 'react-qr-code'
 import { useAuth } from '../context/AuthContext'
+import { usePlaid } from '../hooks/usePlaid'
 import { updateMe, getAccounts, unlinkAccount, setupMfa, enableMfa, disableMfa } from '../api'
+
+const ACCOUNT_STATUS_LABELS = {
+  login_required: 'Reconnect required',
+  pending_expiration: 'Access expiring soon',
+  revoked: 'Access revoked',
+}
 
 export default function Settings({ onNavigate }) {
   const { user, updateUser } = useAuth()
@@ -28,6 +35,10 @@ export default function Settings({ onNavigate }) {
   useEffect(() => {
     getAccounts().then(setAccounts).catch(() => {})
   }, [])
+
+  const { openUpdate, error: plaidError } = usePlaid(() => {
+    getAccounts().then(setAccounts).catch(() => {})
+  })
 
   const handleMfaSetup = async () => {
     setMfaLoading(true)
@@ -136,9 +147,25 @@ export default function Settings({ onNavigate }) {
               <span className="settings-label">Linked banks</span>
             </div>
             {unlinkError && <p className="form-error" style={{ marginBottom: 8 }}>{unlinkError}</p>}
+            {plaidError && <p className="form-error" style={{ marginBottom: 8 }}>{plaidError}</p>}
             {accounts.map(a => (
               <div key={a.id} className="settings-row settings-account-row">
                 <span className="settings-value">{a.institution || a.institution_name}</span>
+                {a.status && a.status !== 'active' && (
+                  <span className="settings-hint" style={{ color: 'var(--danger)' }}>
+                    {ACCOUNT_STATUS_LABELS[a.status] || a.status}
+                  </span>
+                )}
+                {(a.status === 'login_required' || a.status === 'pending_expiration') && (
+                  <button
+                    className="btn-ghost"
+                    style={{ fontSize: 13 }}
+                    onClick={() => openUpdate(a.id)}
+                    aria-label={`Reconnect ${a.institution || a.institution_name}`}
+                  >
+                    Reconnect
+                  </button>
+                )}
                 <button
                   className="unlink-btn"
                   onClick={() => handleUnlink(a.id)}

@@ -32,7 +32,10 @@ class TestRunAlertJob:
                 from worker import run_alert_job
                 await run_alert_job({})
 
-        assert "5" in caplog.text
+        # The count is logged via extra=, so assert on the record attribute —
+        # matching "5" against caplog.text only ever passed via timestamp digits.
+        record = next(r for r in caplog.records if r.message == "job_complete")
+        assert record.alerts_created == 5
 
     async def test_handles_exception_gracefully(self, caplog):
         """Worker job must not propagate exceptions — it should log and continue."""

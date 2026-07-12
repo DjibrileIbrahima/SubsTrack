@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { getLinkToken, exchangeToken } from '../api'
+import { getLinkToken, getUpdateLinkToken, exchangeToken } from '../api'
 
 export function usePlaid(onSuccess) {
   const [loading, setLoading] = useState(false)
@@ -12,7 +12,6 @@ export function usePlaid(onSuccess) {
     let token
     try {
       token = await getLinkToken()
-      console.log('link token fetched:', !!token)
     } catch (e) {
       setError('Failed to fetch link token')
       setLoading(false)
@@ -32,18 +31,50 @@ export function usePlaid(onSuccess) {
         },
         onExit: (err) => {
           if (err) {
-            console.error('Plaid exit:', err)
             setError('Bank connection failed')
           }
         },
       }).open()
     } catch (e) {
-      console.error('Plaid.create error:', e)
       setError('Failed to open bank connection')
     }
 
     setLoading(false)
   }, [onSuccess])
 
-  return { initAndOpen, loading, error }
+  // Update mode: re-authenticate an existing item (e.g. after ITEM_LOGIN_REQUIRED).
+  // No token exchange happens — Plaid repairs the item behind the same access token.
+  const openUpdate = useCallback(async (accountId) => {
+    setLoading(true)
+    setError(null)
+
+    let token
+    try {
+      token = await getUpdateLinkToken(accountId)
+    } catch (e) {
+      setError('Failed to fetch link token')
+      setLoading(false)
+      return
+    }
+
+    try {
+      window.Plaid.create({
+        token,
+        onSuccess: () => {
+          onSuccess?.()
+        },
+        onExit: (err) => {
+          if (err) {
+            setError('Bank reconnection failed')
+          }
+        },
+      }).open()
+    } catch (e) {
+      setError('Failed to open bank connection')
+    }
+
+    setLoading(false)
+  }, [onSuccess])
+
+  return { initAndOpen, openUpdate, loading, error }
 }

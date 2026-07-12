@@ -1,20 +1,87 @@
-"""Background subscription sync triggered by Plaid webhooks."""
+"""Subscription detection + upsert shared by the API route and Plaid webhooks."""
 
 import asyncio
 import logging
-from datetime import date, timedelta
+from decimal import Decimal
 
-from plaid.model.transactions_get_request import TransactionsGetRequest
-from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import LinkedAccount, Subscription
-from plaid_client import client as plaid_client
 from services.encryption import decrypt
 from services.groq_client import groq_model_call
+from services.plaid_service import fetch_transactions
 from services.subscription_pipeline import run_subscription_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def to_money(value) -> Decimal:
+    """Coerce a detected/user-supplied amount to an exact 2-decimal value."""
+    return Decimal(str(value)).quantize(Decimal("0.01"))
+
+
+async def detect_from_transactions(txns: list[dict]) -> list[dict]:
+    """Run the detection pipeline off the event loop, falling back to rules-only."""
+    try:
+        return await asyncio.to_thread(run_subscription_pipeline, txns, groq_model_call)
+    except Exception:
+        logger.warning("AI pipeline failed — falling back to rules-only detection")
+        return await asyncio.to_thread(run_subscription_pipeline, txns)
+
+
+async def _find_existing(db: AsyncSession, user_id, merchant: str) -> Subscription | None:
+    result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == user_id,
+            func.lower(Subscription.merchant) == merchant.lower(),
+            Subscription.source == "plaid",
+        )
+    )
+    return result.scalars().first()
+
+
+async def upsert_detected_subscriptions(db: AsyncSession, user_id, detected: list[dict]) -> None:
+    """Upsert detected subscriptions and commit.
+
+    Inserts run inside a SAVEPOINT so a concurrent sync (webhook + manual button)
+    racing the ix_subscriptions_user_merchant_source unique index degrades to an
+    update instead of failing the whole sync.
+    """
+    for sub in detected:
+        existing = await _find_existing(db, user_id, sub["merchant"])
+        if existing is None:
+            try:
+                async with db.begin_nested():
+                    db.add(Subscription(
+                        user_id=user_id,
+                        merchant=sub["merchant"],
+                        amount=to_money(sub["amount"]),
+                        frequency=sub["frequency"],
+                        category=sub["category"],
+                        last_charged=sub["last_charged"],
+                        next_expected=sub["next_expected"],
+                        occurrences=sub["occurrences"],
+                        source="plaid",
+                    ))
+                continue
+            except IntegrityError:
+                existing = await _find_existing(db, user_id, sub["merchant"])
+                if existing is None:
+                    raise
+
+        if existing.is_active is False:
+            continue  # user deactivated it — don't resurrect
+        existing.merchant = sub["merchant"]
+        existing.amount = to_money(sub["amount"])
+        existing.frequency = sub["frequency"]
+        existing.category = sub["category"]
+        existing.last_charged = sub["last_charged"]
+        existing.next_expected = sub["next_expected"]
+        existing.occurrences = sub["occurrences"]
+
+    await db.commit()
 
 
 async def sync_subscriptions_for_item(item_id: str) -> None:
@@ -35,62 +102,10 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 logger.warning("Webhook sync: no account found for item_id=%s", item_id)
                 return
 
-            access_token = decrypt(account.access_token)
-            user_id = account.user_id
+            txns = await fetch_transactions(decrypt(account.access_token))
+            detected = await detect_from_transactions(txns)
+            await upsert_detected_subscriptions(db, account.user_id, detected)
 
-            end_date = date.today()
-            start_date = end_date - timedelta(days=90)
-            plaid_request = TransactionsGetRequest(
-                access_token=access_token,
-                start_date=start_date,
-                end_date=end_date,
-                options=TransactionsGetRequestOptions(count=500),
-            )
-            response = plaid_client.transactions_get(plaid_request)
-            txns = [t.to_dict() for t in response["transactions"]]
-            for t in txns:
-                if isinstance(t.get("date"), date):
-                    t["date"] = t["date"].isoformat()
-
-            try:
-                detected = await asyncio.to_thread(run_subscription_pipeline, txns, groq_model_call)
-            except Exception:
-                logger.warning("AI pipeline failed for item_id=%s — falling back to rules-only", item_id)
-                detected = run_subscription_pipeline(txns)
-
-            for sub in detected:
-                existing_result = await db.execute(
-                    select(Subscription).where(
-                        Subscription.user_id == user_id,
-                        func.lower(Subscription.merchant) == sub["merchant"].lower(),
-                        Subscription.source == "plaid",
-                    )
-                )
-                existing = existing_result.scalars().first()
-                if existing:
-                    if existing.is_active is False:
-                        continue
-                    existing.merchant = sub["merchant"]
-                    existing.amount = sub["amount"]
-                    existing.frequency = sub["frequency"]
-                    existing.category = sub["category"]
-                    existing.last_charged = sub["last_charged"]
-                    existing.next_expected = sub["next_expected"]
-                    existing.occurrences = sub["occurrences"]
-                else:
-                    db.add(Subscription(
-                        user_id=user_id,
-                        merchant=sub["merchant"],
-                        amount=sub["amount"],
-                        frequency=sub["frequency"],
-                        category=sub["category"],
-                        last_charged=sub["last_charged"],
-                        next_expected=sub["next_expected"],
-                        occurrences=sub["occurrences"],
-                        source="plaid",
-                    ))
-
-            await db.commit()
             logger.info(
                 "Webhook sync complete for item_id=%s: %d subscriptions processed",
                 item_id, len(detected),

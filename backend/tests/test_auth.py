@@ -291,7 +291,7 @@ class TestLinkToken:
         mock_resp = MagicMock()
         mock_resp.__getitem__ = lambda self, k: "link-sandbox-test-token" if k == "link_token" else None
 
-        with patch("routes.auth.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.link_token_create.return_value = mock_resp
             r = await auth_client.post("/api/auth/link-token")
 
@@ -303,10 +303,55 @@ class TestLinkToken:
         assert r.status_code == 401
 
     async def test_create_link_token_plaid_error(self, auth_client):
-        with patch("routes.auth.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.link_token_create.side_effect = Exception("Plaid API error")
             r = await auth_client.post("/api/auth/link-token")
         assert r.status_code == 500
+
+
+# ─── POST /api/auth/link-token/update ────────────────────────────────────────
+
+class TestUpdateLinkToken:
+    async def test_update_link_token_for_own_account(self, auth_client, test_account):
+        mock_resp = MagicMock()
+        mock_resp.__getitem__ = lambda self, k: "link-update-token" if k == "link_token" else None
+
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.link_token_create.return_value = mock_resp
+            r = await auth_client.post(
+                "/api/auth/link-token/update",
+                json={"account_id": str(test_account.id)},
+            )
+
+        assert r.status_code == 200
+        assert r.json()["link_token"] == "link-update-token"
+
+    async def test_update_link_token_unknown_account_returns_404(self, auth_client):
+        r = await auth_client.post(
+            "/api/auth/link-token/update",
+            json={"account_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 404
+
+    async def test_update_link_token_other_users_account_returns_404(self, auth_client, test_user2, db):
+        other_account = LinkedAccount(
+            user_id=test_user2.id,
+            access_token=_encrypt("other-token"),
+            institution_name="Other Bank",
+        )
+        db.add(other_account)
+        await db.flush()
+
+        r = await auth_client.post(
+            "/api/auth/link-token/update",
+            json={"account_id": str(other_account.id)},
+        )
+        assert r.status_code == 404
+
+    async def test_accounts_include_status(self, auth_client, test_account):
+        r = await auth_client.get("/api/auth/accounts")
+        assert r.status_code == 200
+        assert r.json()["accounts"][0]["status"] == "active"
 
 
 # ─── POST /api/auth/exchange-token ───────────────────────────────────────────
@@ -317,7 +362,7 @@ class TestExchangeToken:
         exchange_resp.__getitem__ = lambda self, k: "access-sandbox-abc" if k == "access_token" else "item-sandbox-abc"
         exchange_resp.get = lambda k, default=None: "access-sandbox-abc" if k == "access_token" else "item-sandbox-abc"
 
-        with patch("routes.auth.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.item_public_token_exchange.return_value = exchange_resp
             r = await auth_client.post(
                 "/api/auth/exchange-token",
@@ -339,7 +384,7 @@ class TestExchangeToken:
         assert r.status_code == 401
 
     async def test_exchange_token_plaid_error(self, auth_client):
-        with patch("routes.auth.client") as mock_plaid:
+        with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.item_public_token_exchange.side_effect = Exception("Exchange failed")
             r = await auth_client.post(
                 "/api/auth/exchange-token",
