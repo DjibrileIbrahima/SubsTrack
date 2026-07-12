@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import select
 
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
+from routes.auth import _hash_reset_token
 from services.encryption import decrypt
 from services.encryption import encrypt as _encrypt
 
@@ -504,7 +505,7 @@ class TestResetPassword:
         expires = (
             _utcnow() - timedelta(hours=1) if expired else _utcnow() + timedelta(hours=1)
         )
-        reset = PasswordResetToken(user_id=user_id, token=token, expires_at=expires, used=used)
+        reset = PasswordResetToken(user_id=user_id, token=_hash_reset_token(token), expires_at=expires, used=used)
         db.add(reset)
         await db.flush()
         return reset

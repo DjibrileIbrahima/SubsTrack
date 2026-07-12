@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import logging
 import time
 
@@ -83,5 +84,5 @@ async def verify_plaid_webhook(token: str, raw_body: bytes) -> None:
         raise ValueError("JWT missing 'request_body_sha256' claim")
 
     actual_hash = hashlib.sha256(raw_body).hexdigest()
-    if actual_hash != expected_hash:
+    if not hmac.compare_digest(actual_hash, expected_hash):
         raise ValueError("Request body hash mismatch")

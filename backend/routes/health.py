@@ -30,7 +30,8 @@ async def readiness():
             await db.execute(text("SELECT 1"))
         checks["db"] = "ok"
     except Exception as exc:
-        checks["db"] = f"error: {exc}"
+        # keep exception detail out of the response — it can contain DSNs/credentials
+        checks["db"] = "error"
         logger.error("readiness_db_failed", extra={"error": str(exc)})
 
     try:
@@ -43,7 +44,7 @@ async def readiness():
         await r.aclose()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
+        checks["redis"] = "error"
         logger.error("readiness_redis_failed", extra={"error": str(exc)})
 
     all_ok = all(v == "ok" for v in checks.values())

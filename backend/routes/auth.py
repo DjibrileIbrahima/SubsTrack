@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import secrets
@@ -14,6 +15,7 @@ from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
@@ -29,6 +31,11 @@ from services.mfa import encrypt_secret, generate_totp_secret, get_totp_uri, ver
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _hash_reset_token(token: str) -> str:
+    """Reset tokens are stored hashed so a DB leak can't be used for account takeover."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 router = APIRouter()
@@ -75,7 +82,12 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
     hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     user = User(email=body.email, hashed_password=hashed)
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # concurrent registration with the same email lost the race
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered")
     await db.refresh(user)
     token = create_access_token(str(user.id))
     set_auth_cookie(response, token)
@@ -305,7 +317,7 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest, db: Asy
         return {"message": "If that email exists, a reset link has been sent"}
     token = secrets.token_urlsafe(32)
     expires = _utcnow() + timedelta(hours=1)
-    db.add(PasswordResetToken(user_id=user.id, token=token, expires_at=expires))
+    db.add(PasswordResetToken(user_id=user.id, token=_hash_reset_token(token), expires_at=expires))
     await db.commit()
     reset_url = f"{FRONTEND_URL}?token={token}"
     await send_reset_email(user.email, reset_url)
@@ -323,7 +335,7 @@ async def reset_password(request: Request, body: ResetPasswordRequest, db: Async
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     result = await db.execute(
-        select(PasswordResetToken).where(PasswordResetToken.token == body.token)
+        select(PasswordResetToken).where(PasswordResetToken.token == _hash_reset_token(body.token))
     )
     reset = result.scalar_one_or_none()
     if not reset or reset.used or reset.expires_at < _utcnow():

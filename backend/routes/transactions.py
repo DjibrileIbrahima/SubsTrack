@@ -252,11 +252,14 @@ async def add_manual_subscription(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        next_expected = None
-        if body.next_expected:
+    next_expected = None
+    if body.next_expected:
+        try:
             next_expected = datetime.strptime(body.next_expected, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format, expected YYYY-MM-DD")
 
+    try:
         sub = Subscription(
             user_id=current_user.id,
             merchant=body.merchant,
