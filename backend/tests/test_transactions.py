@@ -578,6 +578,100 @@ class TestSyncSubscriptions:
         assert r.status_code == 401
 
 
+# ─── Subscription identity across price changes (merchant_key) ──────────────
+
+class TestSubscriptionIdentity:
+    async def test_price_change_updates_row_instead_of_duplicating(
+        self, auth_client, test_account, db, test_user
+    ):
+        """A legacy amount-labeled row must be matched by key when the price
+        drifts, not duplicated by the new label."""
+        stale = Subscription(
+            user_id=test_user.id,
+            linked_account_id=test_account.id,
+            merchant="Netflix ($15.49)",
+            merchant_key="netflix",
+            amount=15.49,
+            frequency="monthly",
+            source="plaid",
+        )
+        db.add(stale)
+        await db.flush()
+
+        txns = [
+            _make_plaid_txn("NETFLIX", 17.99, _days_ago(n), txn_id=f"txn-nfx-{n}")
+            for n in (80, 50, 20)
+        ]
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        from sqlalchemy import select
+        rows = (await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == test_user.id,
+                Subscription.merchant_key == "netflix",
+            )
+        )).scalars().all()
+        assert len(rows) == 1  # updated in place, no duplicate
+        assert rows[0].id == stale.id
+        assert float(rows[0].amount) == 17.99
+        assert rows[0].merchant == "Netflix"  # label refreshed
+
+    async def test_distinct_plans_stay_separate_rows(
+        self, auth_client, test_account, db, test_user
+    ):
+        """Two price tiers of one merchant (beyond the match tolerance) must
+        remain two subscriptions."""
+        txns = [
+            _make_plaid_txn("SPOTIFY", 9.99, _days_ago(n), txn_id=f"txn-sp-a-{n}")
+            for n in (80, 50, 20)
+        ] + [
+            _make_plaid_txn("SPOTIFY", 19.99, _days_ago(n), txn_id=f"txn-sp-b-{n}")
+            for n in (78, 48, 18)
+        ]
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        from sqlalchemy import select
+        rows = (await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == test_user.id,
+                Subscription.merchant_key == "spotify",
+            )
+        )).scalars().all()
+        assert len(rows) == 2
+        assert {float(r.amount) for r in rows} == {9.99, 19.99}
+
+    async def test_resync_of_two_plans_does_not_cross_match(
+        self, auth_client, test_account, db, test_user
+    ):
+        """Re-syncing the same two plans updates each row, never merges them."""
+        txns = [
+            _make_plaid_txn("SPOTIFY", 9.99, _days_ago(n), txn_id=f"txn-sp-a-{n}")
+            for n in (80, 50, 20)
+        ] + [
+            _make_plaid_txn("SPOTIFY", 19.99, _days_ago(n), txn_id=f"txn-sp-b-{n}")
+            for n in (78, 48, 18)
+        ]
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
+            await auth_client.post("/api/subscriptions/sync")
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(cursor="c2")
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        from sqlalchemy import select
+        rows = (await db.execute(
+            select(Subscription).where(Subscription.merchant_key == "spotify")
+        )).scalars().all()
+        assert len(rows) == 2
+        assert {float(r.amount) for r in rows} == {9.99, 19.99}
+
+
 # ─── GET /api/summary ────────────────────────────────────────────────────────
 
 class TestGetSummary:

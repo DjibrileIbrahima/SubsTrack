@@ -95,6 +95,7 @@ class Subscription(Base):
         # Mirrors the index created in migration c3d4e5f6a7b8 so that schemas
         # built from metadata (tests) enforce the same constraint as production.
         Index("ix_subscriptions_user_merchant_source", "user_id", text("lower(merchant)"), "source", unique=True),
+        Index("ix_subscriptions_user_merchant_key", "user_id", "merchant_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -105,6 +106,10 @@ class Subscription(Base):
         UUID(as_uuid=True), ForeignKey("linked_accounts.id", ondelete="SET NULL"), index=True, nullable=True
     )
     merchant: Mapped[str] = mapped_column(String, nullable=False)
+    # Stable identity for plaid-detected subs: normalized base merchant with no
+    # amount baked in (the display label may carry one for multi-plan
+    # merchants). Lets a price change update the row instead of duplicating it.
+    merchant_key: Mapped[str | None] = mapped_column(String, nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     frequency: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=True)

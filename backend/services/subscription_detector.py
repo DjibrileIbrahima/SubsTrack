@@ -162,7 +162,9 @@ def infer_frequency(avg_interval: float) -> str | None:
     return None
 
 
-def build_candidate(merchant: str, txns: list[dict]) -> dict | None:
+def build_candidate(merchant: str, txns: list[dict], base_merchant: str | None = None) -> dict | None:
+    """base_merchant is the stable identity when the display label embeds an
+    amount (multi-cluster merchants); defaults to the label itself."""
     if len(txns) < 2:
         return None
 
@@ -212,6 +214,7 @@ def build_candidate(merchant: str, txns: list[dict]) -> dict | None:
 
     return {
         "merchant": merchant.title(),
+        "merchant_key": (base_merchant or merchant).lower(),
         "merchant_raw_samples": list(dict.fromkeys(
             (t.get("merchant_name") or t.get("name") or "Unknown") for t in txns
         ))[:5],
@@ -273,7 +276,7 @@ def detect_subscription_candidates(transactions: list[dict]) -> list[dict]:
                     continue
                 avg_amt = sum(abs(float(t.get("amount", 0) or 0)) for t in cluster) / len(cluster)
                 cluster_merchant = f"{merchant} (${avg_amt:.2f})"
-                candidate = build_candidate(cluster_merchant, cluster)
+                candidate = build_candidate(cluster_merchant, cluster, base_merchant=merchant)
                 if candidate:
                     candidates.append(candidate)
         else:
@@ -292,6 +295,7 @@ def detect_subscriptions(transactions: list[dict], min_confidence: float = 0.75)
     return [
         {
             "merchant": c["merchant"],
+            "merchant_key": c["merchant_key"],
             "amount": c["amount"],
             "frequency": c["frequency"],
             "last_charged": c["last_charged"],

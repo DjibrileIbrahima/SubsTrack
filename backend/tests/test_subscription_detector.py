@@ -201,3 +201,36 @@ class TestDetectSubscriptions:
         results = detect_subscriptions(txns)
         assert len(results) == 1
         assert results[0]["next_expected"] > results[0]["last_charged"]
+
+
+# ---------------------------------------------------------------------------
+# merchant_key (stable identity across price changes)
+# ---------------------------------------------------------------------------
+
+class TestMerchantKey:
+    def test_single_cluster_key_is_lowercased_merchant(self):
+        from services.subscription_detector import detect_subscription_candidates
+        txns = make_txns("NETFLIX", 15.99, date(2024, 1, 1), 30, 4)
+        candidates = detect_subscription_candidates(txns)
+        assert len(candidates) == 1
+        assert candidates[0]["merchant_key"] == "netflix"
+        assert candidates[0]["merchant"] == "Netflix"
+
+    def test_multi_cluster_candidates_share_key_with_distinct_labels(self):
+        """Two price tiers of one merchant: distinct labels, one stable identity key."""
+        from services.subscription_detector import detect_subscription_candidates
+        txns = (
+            make_txns("SPOTIFY", 9.99, date(2024, 1, 1), 30, 3)
+            + make_txns("SPOTIFY", 19.99, date(2024, 1, 5), 30, 3)
+        )
+        candidates = detect_subscription_candidates(txns)
+        assert len(candidates) == 2
+        assert {c["merchant_key"] for c in candidates} == {"spotify"}
+        labels = {c["merchant"] for c in candidates}
+        assert len(labels) == 2
+        assert all("($" in label for label in labels)
+
+    def test_detect_subscriptions_passes_key_through(self):
+        txns = make_txns("GITHUB", 4.0, date(2024, 1, 1), 30, 4)
+        results = detect_subscriptions(txns)
+        assert results[0]["merchant_key"] == "github"

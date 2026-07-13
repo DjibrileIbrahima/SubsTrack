@@ -37,15 +37,50 @@ async def detect_from_transactions(txns: list[dict]) -> list[dict]:
         return await asyncio.to_thread(run_subscription_pipeline, txns)
 
 
-async def _find_existing(db: AsyncSession, user_id, merchant: str) -> Subscription | None:
+# A detected charge matches an existing subscription when the amounts differ
+# by no more than this (relative to the larger of the two). Wide enough to
+# absorb price increases, narrow enough to keep distinct plans separate.
+_AMOUNT_MATCH_TOLERANCE = 0.40
+
+
+def _merchant_key(sub: dict) -> str:
+    return (sub.get("merchant_key") or sub["merchant"]).lower()
+
+
+def _amount_diff(a: float, b: float) -> float:
+    top = max(abs(a), abs(b))
+    return abs(a - b) / top if top else 0.0
+
+
+async def _find_existing(
+    db: AsyncSession, user_id, sub: dict, matched_ids: set
+) -> Subscription | None:
+    """Match a detection to an existing plaid subscription.
+
+    Identity is merchant_key + closest amount within tolerance, so a price
+    change updates the row instead of duplicating it. Falls back to an exact
+    label match (pre-merchant_key rows, or a price jump past the tolerance
+    on a single-plan merchant whose label is stable).
+    """
+    key = _merchant_key(sub)
     result = await db.execute(
         select(Subscription).where(
             Subscription.user_id == user_id,
-            func.lower(Subscription.merchant) == merchant.lower(),
             Subscription.source == "plaid",
+            (Subscription.merchant_key == key)
+            | (func.lower(Subscription.merchant) == sub["merchant"].lower()),
         )
     )
-    return result.scalars().first()
+    rows = [r for r in result.scalars().all() if r.id not in matched_ids]
+    if not rows:
+        return None
+
+    best = min(rows, key=lambda r: _amount_diff(float(r.amount), float(sub["amount"])))
+    if _amount_diff(float(best.amount), float(sub["amount"])) <= _AMOUNT_MATCH_TOLERANCE:
+        return best
+
+    label = sub["merchant"].lower()
+    return next((r for r in rows if r.merchant.lower() == label), None)
 
 
 async def upsert_detected_subscriptions(
@@ -60,34 +95,42 @@ async def upsert_detected_subscriptions(
     racing the ix_subscriptions_user_merchant_source unique index degrades to an
     update instead of failing the whole sync.
     """
+    matched_ids: set = set()
     for sub in detected:
-        existing = await _find_existing(db, user_id, sub["merchant"])
+        existing = await _find_existing(db, user_id, sub, matched_ids)
         if existing is None:
             try:
+                new_row = Subscription(
+                    user_id=user_id,
+                    linked_account_id=linked_account_id,
+                    merchant=sub["merchant"],
+                    merchant_key=_merchant_key(sub),
+                    amount=to_money(sub["amount"]),
+                    frequency=sub["frequency"],
+                    category=sub["category"],
+                    last_charged=sub["last_charged"],
+                    next_expected=sub["next_expected"],
+                    occurrences=sub["occurrences"],
+                    source="plaid",
+                )
                 async with db.begin_nested():
-                    db.add(Subscription(
-                        user_id=user_id,
-                        linked_account_id=linked_account_id,
-                        merchant=sub["merchant"],
-                        amount=to_money(sub["amount"]),
-                        frequency=sub["frequency"],
-                        category=sub["category"],
-                        last_charged=sub["last_charged"],
-                        next_expected=sub["next_expected"],
-                        occurrences=sub["occurrences"],
-                        source="plaid",
-                    ))
+                    db.add(new_row)
+                # claim the fresh row so a sibling cluster within tolerance
+                # can't match (and overwrite) it later in this loop
+                matched_ids.add(new_row.id)
                 continue
             except IntegrityError:
-                existing = await _find_existing(db, user_id, sub["merchant"])
+                existing = await _find_existing(db, user_id, sub, matched_ids)
                 if existing is None:
                     raise
 
+        matched_ids.add(existing.id)  # one row per detection this round
         if existing.is_active is False:
             continue  # user deactivated it — don't resurrect
         if existing.linked_account_id is None and linked_account_id is not None:
             existing.linked_account_id = linked_account_id  # backfill legacy rows
         existing.merchant = sub["merchant"]
+        existing.merchant_key = _merchant_key(sub)
         existing.amount = to_money(sub["amount"])
         existing.frequency = sub["frequency"]
         existing.category = sub["category"]

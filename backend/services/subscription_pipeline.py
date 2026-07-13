@@ -10,6 +10,8 @@ def merge_candidate_and_ai(candidate: dict, ai_result: dict) -> dict | None:
 
     return {
         "merchant": ai_result.get("normalized_merchant") or candidate["merchant"],
+        # Identity stays the rules-normalized key even when the AI renames the label
+        "merchant_key": candidate.get("merchant_key"),
         "amount": candidate["amount"],
         "frequency": ai_result.get("frequency") if ai_result.get("frequency") != "unknown" else candidate["frequency"],
         "last_charged": candidate["last_charged"],
@@ -36,6 +38,7 @@ def run_subscription_pipeline(transactions: list[dict], model_call=None, max_ai_
         if rules_conf >= high_threshold:
             accepted.append({
                 "merchant": candidate["merchant"],
+                "merchant_key": candidate.get("merchant_key"),
                 "amount": candidate["amount"],
                 "frequency": candidate["frequency"],
                 "last_charged": candidate["last_charged"],
