@@ -3,14 +3,15 @@ import { useAuth } from '../../context/AuthContext'
 import api from '../../api'
 import { verifyMfa } from '../../api'
 
-export default function Login({ onSwitch, onForgot, successMessage }) {
+export default function Login({ onSwitch, onForgot, successMessage, initialMfaToken = null }) {
   const { login } = useAuth()
   const [form, setForm] = useState({ email: '', password: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  // MFA second step
-  const [mfaToken, setMfaToken] = useState(null)
+  // MFA second step — seeded from the Google OAuth redirect (?mfa_token=...)
+  // or set after a password login that returns 202 mfa_required.
+  const [mfaToken, setMfaToken] = useState(initialMfaToken)
   const [otp, setOtp] = useState('')
 
   const set = (field) => (e) => setForm(p => ({ ...p, [field]: e.target.value }))

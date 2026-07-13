@@ -61,6 +61,17 @@ def _redis() -> aioredis.Redis:
     return aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
 
 
+async def _create_mfa_session(user_id: str) -> str:
+    """Store a short-lived second-factor session in Redis and return its token."""
+    mfa_token = str(uuid.uuid4())
+    r = _redis()
+    try:
+        await r.setex(f"{_MFA_SESSION_PREFIX}{mfa_token}", _MFA_SESSION_TTL, user_id)
+    finally:
+        await r.aclose()
+    return mfa_token
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 class RegisterRequest(BaseModel):
@@ -105,12 +116,7 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.mfa_enabled and user.mfa_secret:
-        mfa_token = str(uuid.uuid4())
-        r = _redis()
-        try:
-            await r.setex(f"{_MFA_SESSION_PREFIX}{mfa_token}", _MFA_SESSION_TTL, str(user.id))
-        finally:
-            await r.aclose()
+        mfa_token = await _create_mfa_session(str(user.id))
         return JSONResponse(status_code=202, content={"mfa_required": True, "mfa_token": mfa_token})
 
     token = create_access_token(str(user.id))
@@ -283,6 +289,11 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
     email = user_info.get("email")
     if not email:
         raise HTTPException(status_code=400, detail="Could not get email from Google")
+    # Accounts are matched by email, so an unverified Google email would let an
+    # attacker claim someone else's account. Require Google's verification flag.
+    if user_info.get("verified_email") is not True:
+        logger.warning("Google OAuth rejected: unverified email")
+        raise HTTPException(status_code=400, detail="Google account email is not verified")
 
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
@@ -291,6 +302,14 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
         db.add(user)
         await db.commit()
         await db.refresh(user)
+
+    # MFA applies regardless of how the first factor was satisfied — OAuth must
+    # not become a bypass. Hand off to the same /mfa/verify step as password login.
+    if user.mfa_enabled and user.mfa_secret:
+        mfa_token = await _create_mfa_session(str(user.id))
+        response = RedirectResponse(f"{FRONTEND_URL}/?mfa_token={mfa_token}")
+        response.delete_cookie(key="oauth_state", path="/")
+        return response
 
     token = create_access_token(str(user.id))
     response = RedirectResponse(f"{FRONTEND_URL}/")

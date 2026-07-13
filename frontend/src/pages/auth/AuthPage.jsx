@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Login from './Login'
 import Register from './Register'
 import ForgotPassword from './ForgotPassword'
 import ResetPassword from './ResetPassword'
 
-function getResetToken() {
-  return new URLSearchParams(window.location.search).get('token')
+function getParam(name) {
+  return new URLSearchParams(window.location.search).get(name)
 }
 
 function clearToken() {
@@ -13,9 +13,16 @@ function clearToken() {
 }
 
 export default function AuthPage() {
-  const [view, setView] = useState(() => getResetToken() ? 'reset' : 'login')
-  const [token] = useState(getResetToken)
+  const [view, setView] = useState(() => getParam('token') ? 'reset' : 'login')
+  const [token] = useState(() => getParam('token'))
+  // One-time second-factor token from the Google OAuth redirect (?mfa_token=...)
+  const [mfaToken] = useState(() => getParam('mfa_token'))
   const [resetDone, setResetDone] = useState(false)
+
+  useEffect(() => {
+    // Scrub the one-time token from the address bar and history once captured
+    if (mfaToken) clearToken()
+  }, [mfaToken])
 
   const handleResetSuccess = () => {
     clearToken()
@@ -30,6 +37,7 @@ export default function AuthPage() {
           onSwitch={() => setView('register')}
           onForgot={() => setView('forgot')}
           successMessage={resetDone ? 'Password updated — sign in with your new password.' : null}
+          initialMfaToken={mfaToken}
         />
       )}
       {view === 'register' && <Register onSwitch={() => setView('login')} />}

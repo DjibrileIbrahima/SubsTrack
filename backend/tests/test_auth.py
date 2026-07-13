@@ -236,7 +236,7 @@ class TestGoogleCallback:
 
         mock_http = _make_httpx_mock(
             {"access_token": "google-token"},
-            {"email": "newgoogle@example.com"},
+            {"email": "newgoogle@example.com", "verified_email": True},
         )
         with patch("routes.auth.httpx.AsyncClient", return_value=mock_http):
             r = await client.get(
@@ -254,7 +254,7 @@ class TestGoogleCallback:
 
         mock_http = _make_httpx_mock(
             {"access_token": "google-token"},
-            {"email": test_user.email},
+            {"email": test_user.email, "verified_email": True},
         )
         with patch("routes.auth.httpx.AsyncClient", return_value=mock_http):
             r = await client.get(
@@ -264,6 +264,77 @@ class TestGoogleCallback:
 
         assert r.status_code in (302, 307)
         assert "access_token" in r.cookies
+
+    async def test_callback_rejects_unverified_email(self, client, db):
+        """An unverified Google email must not log in or create an account."""
+        state = "valid-test-state-unverified"
+        client.cookies.set("oauth_state", state)
+
+        mock_http = _make_httpx_mock(
+            {"access_token": "google-token"},
+            {"email": "unverified@example.com", "verified_email": False},
+        )
+        with patch("routes.auth.httpx.AsyncClient", return_value=mock_http):
+            r = await client.get(
+                f"/api/auth/google/callback?code=authcode&state={state}",
+                follow_redirects=False,
+            )
+
+        assert r.status_code == 400
+        assert "not verified" in r.json()["detail"]
+        assert "access_token" not in r.cookies
+        result = await db.execute(select(User).where(User.email == "unverified@example.com"))
+        assert result.scalar_one_or_none() is None
+
+    async def test_callback_rejects_missing_verified_email_claim(self, client, db):
+        """Absence of the verified_email claim must fail closed."""
+        state = "valid-test-state-noclaim"
+        client.cookies.set("oauth_state", state)
+
+        mock_http = _make_httpx_mock(
+            {"access_token": "google-token"},
+            {"email": "noclaim@example.com"},
+        )
+        with patch("routes.auth.httpx.AsyncClient", return_value=mock_http):
+            r = await client.get(
+                f"/api/auth/google/callback?code=authcode&state={state}",
+                follow_redirects=False,
+            )
+
+        assert r.status_code == 400
+        assert "access_token" not in r.cookies
+
+    async def test_callback_mfa_user_gets_no_session_cookie(self, client, db, test_user):
+        """OAuth login must not bypass MFA — the user is handed off to /mfa/verify."""
+        test_user.mfa_enabled = True
+        test_user.mfa_secret = _encrypt("JBSWY3DPEHPK3PXP")
+        await db.flush()
+
+        state = "valid-test-state-mfa"
+        client.cookies.set("oauth_state", state)
+
+        mock_http = _make_httpx_mock(
+            {"access_token": "google-token"},
+            {"email": test_user.email, "verified_email": True},
+        )
+        mock_redis = AsyncMock()
+        with (
+            patch("routes.auth.httpx.AsyncClient", return_value=mock_http),
+            patch("routes.auth._redis", return_value=mock_redis),
+        ):
+            r = await client.get(
+                f"/api/auth/google/callback?code=authcode&state={state}",
+                follow_redirects=False,
+            )
+
+        assert r.status_code in (302, 307)
+        assert "access_token" not in r.cookies
+        assert "mfa_token=" in r.headers["location"]
+        # The MFA session must have been stored for /mfa/verify to pick up
+        mock_redis.setex.assert_called_once()
+        key = mock_redis.setex.call_args[0][0]
+        assert key.startswith("mfa_session:")
+        assert mock_redis.setex.call_args[0][2] == str(test_user.id)
 
     async def test_callback_google_token_error(self, client):
         state = "valid-test-state"

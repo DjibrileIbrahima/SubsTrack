@@ -10,13 +10,14 @@ import Login from './Login'
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 vi.mock('../../api', () => ({
   default: { post: vi.fn() },
+  verifyMfa: vi.fn(),
 }))
 
 vi.mock('../../context/AuthContext', () => ({
   useAuth: vi.fn(),
 }))
 
-import api from '../../api'
+import api, { verifyMfa } from '../../api'
 import { useAuth } from '../../context/AuthContext'
 
 beforeEach(() => {
@@ -29,8 +30,15 @@ beforeEach(() => {
   })
 })
 
-function renderLogin({ onSwitch = vi.fn(), onForgot = vi.fn(), successMessage = null } = {}) {
-  return render(<Login onSwitch={onSwitch} onForgot={onForgot} successMessage={successMessage} />)
+function renderLogin({ onSwitch = vi.fn(), onForgot = vi.fn(), successMessage = null, initialMfaToken = null } = {}) {
+  return render(
+    <Login
+      onSwitch={onSwitch}
+      onForgot={onForgot}
+      successMessage={successMessage}
+      initialMfaToken={initialMfaToken}
+    />
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,5 +178,48 @@ describe('Login', () => {
   it('does not display a success message when successMessage is null', () => {
     renderLogin({ successMessage: null })
     expect(screen.queryByText(/password updated/i)).not.toBeInTheDocument()
+  })
+})
+
+// ── OAuth MFA handoff (?mfa_token= from the Google redirect) ─────────────────
+
+describe('Login — OAuth MFA handoff', () => {
+  it('renders the OTP step directly when initialMfaToken is provided', () => {
+    renderLogin({ initialMfaToken: 'oauth-mfa-token' })
+    expect(screen.getByText(/two-factor authentication/i)).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/email/i)).not.toBeInTheDocument()
+  })
+
+  it('verifies the OTP against the seeded token and logs in', async () => {
+    const loginFn = vi.fn().mockResolvedValue(undefined)
+    useAuth.mockReturnValue({ login: loginFn })
+    verifyMfa.mockResolvedValue({})
+
+    renderLogin({ initialMfaToken: 'oauth-mfa-token' })
+    await userEvent.type(screen.getByPlaceholderText('000000'), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /verify/i }))
+
+    await waitFor(() => {
+      expect(verifyMfa).toHaveBeenCalledWith('oauth-mfa-token', '123456')
+      expect(loginFn).toHaveBeenCalled()
+    })
+  })
+
+  it('shows the backend error when the MFA session has expired', async () => {
+    verifyMfa.mockRejectedValue({
+      response: { data: { detail: 'MFA session expired — please log in again' } },
+    })
+
+    renderLogin({ initialMfaToken: 'stale-token' })
+    await userEvent.type(screen.getByPlaceholderText('000000'), '123456')
+    await userEvent.click(screen.getByRole('button', { name: /verify/i }))
+
+    expect(await screen.findByText(/session expired/i)).toBeInTheDocument()
+  })
+
+  it('back button returns to the password form', async () => {
+    renderLogin({ initialMfaToken: 'oauth-mfa-token' })
+    await userEvent.click(screen.getByRole('button', { name: /back/i }))
+    expect(screen.getByPlaceholderText(/email/i)).toBeInTheDocument()
   })
 })

@@ -16,10 +16,11 @@ import AuthPage from './AuthPage'
 // as clickable buttons so tests can trigger navigation callbacks.
 
 vi.mock('./Login', () => ({
-  default: ({ onSwitch, onForgot, successMessage }) => (
+  default: ({ onSwitch, onForgot, successMessage, initialMfaToken }) => (
     <div>
       <span>login-view</span>
       {successMessage && <span data-testid="success-msg">{successMessage}</span>}
+      {initialMfaToken && <span data-testid="mfa-token">{initialMfaToken}</span>}
       <button onClick={onForgot}>go-forgot</button>
       <button onClick={onSwitch}>go-register</button>
     </div>
@@ -143,5 +144,27 @@ describe('AuthPage — reset token in URL', () => {
     render(<AuthPage />)
     await userEvent.click(screen.getByRole('button', { name: 'reset-done' }))
     expect(window.history.replaceState).toHaveBeenCalled()
+  })
+})
+
+// ── ?mfa_token= URL handling (Google OAuth MFA handoff) ──────────────────────
+
+describe('AuthPage — mfa_token in URL', () => {
+  it('shows the login view and passes the token to Login', () => {
+    window.location.search = '?mfa_token=xyz789'
+    render(<AuthPage />)
+    expect(screen.getByText('login-view')).toBeInTheDocument()
+    expect(screen.getByTestId('mfa-token')).toHaveTextContent('xyz789')
+  })
+
+  it('scrubs the one-time token from the URL after capturing it', async () => {
+    window.location.search = '?mfa_token=xyz789'
+    render(<AuthPage />)
+    await waitFor(() => expect(window.history.replaceState).toHaveBeenCalled())
+  })
+
+  it('does not pass a token to Login when the param is absent', () => {
+    render(<AuthPage />)
+    expect(screen.queryByTestId('mfa-token')).not.toBeInTheDocument()
   })
 })
