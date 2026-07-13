@@ -11,7 +11,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,18 @@ def _utcnow() -> datetime:
 def _hash_reset_token(token: str) -> str:
     """Reset tokens are stored hashed so a DB leak can't be used for account takeover."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _normalize_email(email: str) -> str:
+    """Emails are stored lowercased; Foo@x.com and foo@x.com are one account."""
+    return email.strip().lower()
+
+
+async def _get_user_by_email(db: AsyncSession, email: str) -> User | None:
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == _normalize_email(email))
+    )
+    return result.scalar_one_or_none()
 
 
 router = APIRouter()
@@ -82,13 +94,12 @@ class RegisterRequest(BaseModel):
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 async def register(request: Request, response: Response, body: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
-    if result.scalar_one_or_none():
+    if await _get_user_by_email(db, body.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
-    user = User(email=body.email, hashed_password=hashed)
+    user = User(email=_normalize_email(body.email), hashed_password=hashed)
     db.add(user)
     try:
         await db.commit()
@@ -110,8 +121,7 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
+    user = await _get_user_by_email(db, body.email)
     if not user or not user.hashed_password or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -295,10 +305,9 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
         logger.warning("Google OAuth rejected: unverified email")
         raise HTTPException(status_code=400, detail="Google account email is not verified")
 
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
+    user = await _get_user_by_email(db, email)
     if not user:
-        user = User(email=email, hashed_password=None)
+        user = User(email=_normalize_email(email), hashed_password=None)
         db.add(user)
         await db.commit()
         await db.refresh(user)
@@ -327,8 +336,7 @@ class ForgotPasswordRequest(BaseModel):
 @router.post("/forgot-password")
 @limiter.limit("3/minute")
 async def forgot_password(request: Request, body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
+    user = await _get_user_by_email(db, body.email)
     if not user or not user.hashed_password:
         return {"message": "If that email exists, a reset link has been sent"}
     token = secrets.token_urlsafe(32)

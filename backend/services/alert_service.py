@@ -2,6 +2,7 @@ import logging
 from datetime import date, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Alert, Subscription, User
@@ -33,17 +34,21 @@ async def generate_upcoming_alerts(
     result = await db.execute(select(Subscription).where(*filters))
     subs = result.scalars().all()
 
+    # One query for everything already alerted, instead of one per subscription
+    already_alerted: set = set()
+    if subs:
+        pairs = await db.execute(
+            select(Alert.subscription_id, Alert.due_date).where(
+                Alert.subscription_id.in_([s.id for s in subs])
+            )
+        )
+        already_alerted = set(pairs.all())
+
     # user_id -> list of dicts used both for Alert creation and email rendering
     new_by_user: dict = {}
 
     for sub in subs:
-        existing = await db.execute(
-            select(Alert).where(
-                Alert.subscription_id == sub.id,
-                Alert.due_date == sub.next_expected,
-            )
-        )
-        if existing.scalar_one_or_none():
+        if (sub.id, sub.next_expected) in already_alerted:
             continue
 
         days_until = (sub.next_expected - today).days
@@ -60,7 +65,14 @@ async def generate_upcoming_alerts(
             message=f"{sub.merchant} renews {when} for ${sub.amount:.2f}",
             due_date=sub.next_expected,
         )
-        db.add(alert)
+        try:
+            # SAVEPOINT per insert: a concurrent run (cron + manual trigger)
+            # racing the ix_alerts_subscription_due unique index just skips
+            # the alert — and its email — instead of failing the whole job.
+            async with db.begin_nested():
+                db.add(alert)
+        except IntegrityError:
+            continue
         new_by_user.setdefault(sub.user_id, []).append(
             {"merchant": sub.merchant, "amount": sub.amount, "when": when}
         )

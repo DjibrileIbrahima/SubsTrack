@@ -156,3 +156,37 @@ class TestEmailNotification:
         # No subscriptions → no alerts → no email
         await generate_upcoming_alerts(db, user_id=test_user.id)
         mock_send_email.assert_not_awaited()
+
+
+# ─── Idempotency under concurrency (unique index) ─────────────────────────────
+
+class TestAlertUniqueConstraint:
+    async def test_duplicate_alert_rejected_by_db(self, db, test_user):
+        """The DB itself enforces one alert per (subscription, due_date), so
+        concurrent generation runs can't double-alert."""
+        import pytest
+        from sqlalchemy.exc import IntegrityError
+
+        sub = await _make_sub(db, test_user.id, "Netflix", 15.99, 3)
+        due = sub.next_expected
+        db.add(Alert(user_id=test_user.id, subscription_id=sub.id,
+                     message="first", due_date=due))
+        await db.flush()
+        db.add(Alert(user_id=test_user.id, subscription_id=sub.id,
+                     message="second", due_date=due))
+        with pytest.raises(IntegrityError):
+            await db.flush()
+        await db.rollback()
+
+    async def test_generation_skips_conflicting_alert_gracefully(self, db, test_user, mock_send_email):
+        """A pre-existing alert for the same due date is skipped, not an error,
+        and no email is sent for it."""
+        test_user.alert_email = True
+        sub = await _make_sub(db, test_user.id, "Netflix", 15.99, 3)
+        db.add(Alert(user_id=test_user.id, subscription_id=sub.id,
+                     message="already there", due_date=sub.next_expected))
+        await db.flush()
+
+        count = await generate_upcoming_alerts(db, user_id=test_user.id)
+        assert count == 0
+        mock_send_email.assert_not_awaited()

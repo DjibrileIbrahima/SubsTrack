@@ -22,6 +22,11 @@ from db.database import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # Emails are stored lowercased and compared case-insensitively;
+        # this index makes the DB enforce it even against raced writes.
+        Index("ix_users_email_lower", text("lower(email)"), unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)        # stored plain, encrypt in Phase 8
@@ -140,6 +145,11 @@ class PasswordResetToken(Base):
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        # One alert per subscription per due date — makes alert generation
+        # idempotent under concurrency (cron + manual trigger, worker replicas).
+        Index("ix_alerts_subscription_due", "subscription_id", "due_date", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)

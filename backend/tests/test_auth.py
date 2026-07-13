@@ -66,6 +66,19 @@ class TestRegister:
         assert r.status_code == 400
         assert "already registered" in r.json()["detail"]
 
+    async def test_register_stores_email_lowercased(self, client, db):
+        r = await client.post("/api/auth/register", json={"email": "MixedCase@Example.COM", "password": "secure123"})
+        assert r.status_code == 201
+        assert r.json()["email"] == "mixedcase@example.com"
+        result = await db.execute(select(User).where(User.email == "mixedcase@example.com"))
+        assert result.scalar_one_or_none() is not None
+
+    async def test_register_duplicate_email_different_case(self, client, test_user):
+        """Foo@x.com and foo@x.com must be one account."""
+        r = await client.post("/api/auth/register", json={"email": "TEST@Example.com", "password": "password123"})
+        assert r.status_code == 400
+        assert "already registered" in r.json()["detail"]
+
     async def test_register_short_password(self, client):
         r = await client.post("/api/auth/register", json={"email": "short@example.com", "password": "abc"})
         assert r.status_code == 400
@@ -88,6 +101,11 @@ class TestLogin:
         assert r.status_code == 200
         assert r.json()["email"] == "test@example.com"
         assert "access_token" in r.cookies
+
+    async def test_login_is_case_insensitive(self, client, test_user):
+        r = await client.post("/api/auth/login", json={"email": "TEST@example.COM", "password": "password123"})
+        assert r.status_code == 200
+        assert r.json()["email"] == "test@example.com"
 
     async def test_login_wrong_password(self, client, test_user):
         r = await client.post("/api/auth/login", json={"email": "test@example.com", "password": "wrongpass"})
@@ -342,6 +360,27 @@ class TestGoogleCallback:
 
         assert r.status_code in (302, 307)
         assert "access_token" in r.cookies
+
+    async def test_callback_matches_existing_user_case_insensitively(self, client, db, test_user):
+        """Google returning different casing must not create a second account."""
+        state = "valid-test-state-case"
+        client.cookies.set("oauth_state", state)
+
+        mock_http = _make_httpx_mock(
+            {"access_token": "google-token"},
+            {"email": "TEST@Example.com", "verified_email": True},
+        )
+        with patch("routes.auth.httpx.AsyncClient", return_value=mock_http):
+            r = await client.get(
+                f"/api/auth/google/callback?code=authcode&state={state}",
+                follow_redirects=False,
+            )
+
+        assert r.status_code in (302, 307)
+        result = await db.execute(select(User))
+        users = result.scalars().all()
+        assert len(users) == 1  # matched test_user, no new account
+        assert users[0].id == test_user.id
 
     async def test_callback_rejects_unverified_email(self, client, db):
         """An unverified Google email must not log in or create an account."""
