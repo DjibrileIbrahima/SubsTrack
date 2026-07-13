@@ -98,6 +98,17 @@ async def get_user_transactions(db: AsyncSession, user_id, days: int) -> list[Tr
     return list(result.scalars().all())
 
 
+async def get_account_transactions(db: AsyncSession, account_id, days: int) -> list[Transaction]:
+    """Load one linked account's stored transactions within the window, newest first."""
+    cutoff = date.today() - timedelta(days=days)
+    result = await db.execute(
+        select(Transaction)
+        .where(Transaction.linked_account_id == account_id, Transaction.date >= cutoff)
+        .order_by(Transaction.date.desc())
+    )
+    return list(result.scalars().all())
+
+
 def to_detection_dicts(rows: list[Transaction]) -> list[dict]:
     """Shape stored rows like Plaid transaction dicts for the detection pipeline."""
     return [

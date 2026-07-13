@@ -20,6 +20,7 @@ from services.subscription_sync import (
     upsert_detected_subscriptions,
 )
 from services.transaction_store import (
+    get_account_transactions,
     get_user_transactions,
     serialize_transaction,
     sync_account_transactions,
@@ -121,14 +122,20 @@ async def sync_subscriptions(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Sync subscriptions from Plaid and update DB. POST because it writes."""
+    """Sync subscriptions from Plaid and update DB. POST because it writes.
+
+    Detection runs per linked account so each subscription is attributed to
+    the bank whose transactions produced it.
+    """
     accounts = await get_linked_accounts(current_user, db)
     try:
         for account in accounts:
             await sync_account_transactions(db, account)
-        rows = await get_user_transactions(db, current_user.id, DETECTION_WINDOW_DAYS)
-        detected = await detect_from_transactions(to_detection_dicts(rows))
-        await upsert_detected_subscriptions(db, current_user.id, detected)
+            rows = await get_account_transactions(db, account.id, DETECTION_WINDOW_DAYS)
+            detected = await detect_from_transactions(to_detection_dicts(rows))
+            await upsert_detected_subscriptions(
+                db, current_user.id, detected, linked_account_id=account.id
+            )
         return await _active_subscriptions_response(db, current_user.id)
     except Exception:
         await db.rollback()

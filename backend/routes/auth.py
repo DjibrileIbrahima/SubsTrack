@@ -478,11 +478,25 @@ async def unlink_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     try:
+        # Only deactivate subscriptions that came from THIS bank. Legacy rows
+        # (linked_account_id NULL, from before attribution existed) are swept
+        # only when this is the user's last linked account — with no banks
+        # left, no plaid subscription can still be live.
+        count_result = await db.execute(
+            select(LinkedAccount.id).where(LinkedAccount.user_id == current_user.id)
+        )
+        is_last_account = len(count_result.scalars().all()) == 1
+
+        scope = Subscription.linked_account_id == account.id
+        if is_last_account:
+            scope = scope | (Subscription.linked_account_id == None)  # noqa: E711
+
         subs_result = await db.execute(
             select(Subscription).where(
                 Subscription.user_id == current_user.id,
                 Subscription.source == "plaid",
                 Subscription.is_active == True,  # noqa: E712
+                scope,
             )
         )
         for sub in subs_result.scalars().all():

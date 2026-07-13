@@ -459,6 +459,21 @@ class TestSyncSubscriptions:
         subs = r.json()["subscriptions"]
         assert any(s["merchant"] == "Netflix" for s in subs)
 
+    async def test_sync_attributes_subscription_to_linked_account(
+        self, auth_client, test_account, db, test_user
+    ):
+        """Detected subscriptions record which bank produced them (for scoped unlink)."""
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        from sqlalchemy import select
+        sub = (await db.execute(
+            select(Subscription).where(Subscription.merchant == "Netflix")
+        )).scalars().one()
+        assert sub.linked_account_id == test_account.id
+
     async def test_sync_persists_transactions_and_cursor(self, auth_client, test_account, db, test_user):
         """Synced transactions land in the local table and the cursor is stored."""
         with patch("services.plaid_service.client") as mock_plaid:

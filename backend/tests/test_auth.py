@@ -528,6 +528,63 @@ class TestUnlinkAccount:
         await db.refresh(sub)
         assert sub.is_active is False
 
+    async def test_unlink_only_deactivates_that_banks_subscriptions(
+        self, auth_client, db, test_user, test_account
+    ):
+        """Subscriptions from OTHER linked banks must survive an unlink."""
+        second_account = LinkedAccount(
+            user_id=test_user.id,
+            access_token=_encrypt("access-sandbox-second-token"),
+            item_id="item-sandbox-test-002",
+            institution_name="Second Bank",
+        )
+        db.add(second_account)
+        await db.flush()
+
+        from_first = Subscription(
+            user_id=test_user.id, linked_account_id=test_account.id,
+            merchant="Netflix", amount=15.99, frequency="monthly", source="plaid",
+        )
+        from_second = Subscription(
+            user_id=test_user.id, linked_account_id=second_account.id,
+            merchant="Spotify", amount=9.99, frequency="monthly", source="plaid",
+        )
+        db.add(from_first)
+        db.add(from_second)
+        await db.flush()
+
+        r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        assert r.status_code == 200
+
+        await db.refresh(from_first)
+        await db.refresh(from_second)
+        assert from_first.is_active is False
+        assert from_second.is_active is True
+
+    async def test_legacy_subs_survive_when_other_accounts_remain(
+        self, auth_client, db, test_user, test_account
+    ):
+        """Unattributed (legacy) plaid subs are only swept on the LAST unlink."""
+        second_account = LinkedAccount(
+            user_id=test_user.id,
+            access_token=_encrypt("access-sandbox-second-token"),
+            item_id="item-sandbox-test-002",
+            institution_name="Second Bank",
+        )
+        db.add(second_account)
+        legacy = Subscription(
+            user_id=test_user.id, linked_account_id=None,
+            merchant="Hulu", amount=7.99, frequency="monthly", source="plaid",
+        )
+        db.add(legacy)
+        await db.flush()
+
+        r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        assert r.status_code == 200
+
+        await db.refresh(legacy)
+        assert legacy.is_active is True  # Second Bank still linked — may be its sub
+
     async def test_manual_subscriptions_unaffected(self, auth_client, db, test_user, test_account):
         manual_sub = Subscription(
             user_id=test_user.id,

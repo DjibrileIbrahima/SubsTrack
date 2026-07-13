@@ -99,6 +99,11 @@ class Subscription(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    # Which bank produced this subscription (NULL for manual subs and legacy
+    # rows) — lets unlink deactivate only that account's subscriptions.
+    linked_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("linked_accounts.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     merchant: Mapped[str] = mapped_column(String, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     frequency: Mapped[str] = mapped_column(String, nullable=False)

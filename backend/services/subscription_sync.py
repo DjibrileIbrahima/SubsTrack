@@ -12,7 +12,7 @@ from db.models import LinkedAccount, Subscription
 from services.groq_client import groq_model_call
 from services.subscription_pipeline import run_subscription_pipeline
 from services.transaction_store import (
-    get_user_transactions,
+    get_account_transactions,
     sync_account_transactions,
     to_detection_dicts,
 )
@@ -48,8 +48,13 @@ async def _find_existing(db: AsyncSession, user_id, merchant: str) -> Subscripti
     return result.scalars().first()
 
 
-async def upsert_detected_subscriptions(db: AsyncSession, user_id, detected: list[dict]) -> None:
+async def upsert_detected_subscriptions(
+    db: AsyncSession, user_id, detected: list[dict], linked_account_id=None
+) -> None:
     """Upsert detected subscriptions and commit.
+
+    linked_account_id records which bank the detections came from, so that
+    unlinking that bank only touches its own subscriptions.
 
     Inserts run inside a SAVEPOINT so a concurrent sync (webhook + manual button)
     racing the ix_subscriptions_user_merchant_source unique index degrades to an
@@ -62,6 +67,7 @@ async def upsert_detected_subscriptions(db: AsyncSession, user_id, detected: lis
                 async with db.begin_nested():
                     db.add(Subscription(
                         user_id=user_id,
+                        linked_account_id=linked_account_id,
                         merchant=sub["merchant"],
                         amount=to_money(sub["amount"]),
                         frequency=sub["frequency"],
@@ -79,6 +85,8 @@ async def upsert_detected_subscriptions(db: AsyncSession, user_id, detected: lis
 
         if existing.is_active is False:
             continue  # user deactivated it — don't resurrect
+        if existing.linked_account_id is None and linked_account_id is not None:
+            existing.linked_account_id = linked_account_id  # backfill legacy rows
         existing.merchant = sub["merchant"]
         existing.amount = to_money(sub["amount"])
         existing.frequency = sub["frequency"]
@@ -109,9 +117,11 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 return
 
             await sync_account_transactions(db, account)
-            rows = await get_user_transactions(db, account.user_id, DETECTION_WINDOW_DAYS)
+            rows = await get_account_transactions(db, account.id, DETECTION_WINDOW_DAYS)
             detected = await detect_from_transactions(to_detection_dicts(rows))
-            await upsert_detected_subscriptions(db, account.user_id, detected)
+            await upsert_detected_subscriptions(
+                db, account.user_id, detected, linked_account_id=account.id
+            )
 
             logger.info(
                 "Webhook sync complete for item_id=%s: %d subscriptions processed",
