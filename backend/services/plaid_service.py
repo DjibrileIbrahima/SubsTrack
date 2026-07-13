@@ -6,48 +6,78 @@ should go through this module rather than calling the client directly.
 """
 
 import asyncio
-from datetime import date, timedelta
+import json
 
+from plaid.exceptions import ApiException
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
-from plaid.model.transactions_get_request import TransactionsGetRequest
-from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
+from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 
 _PAGE_SIZE = 500
 
 
-def _fetch_transactions_sync(access_token: str, days: int) -> list[dict]:
-    end_date = date.today()
-    start_date = end_date - timedelta(days=days)
-
-    txns: list[dict] = []
-    while True:
-        request = TransactionsGetRequest(
-            access_token=access_token,
-            start_date=start_date,
-            end_date=end_date,
-            options=TransactionsGetRequestOptions(count=_PAGE_SIZE, offset=len(txns)),
-        )
-        response = client.transactions_get(request)
-        page = [t.to_dict() for t in response["transactions"]]
-        txns.extend(page)
-
-        total = response["total_transactions"]
-        if not page or not isinstance(total, int) or len(txns) >= total:
-            break
-
-    for t in txns:
-        if isinstance(t.get("date"), date):
-            t["date"] = t["date"].isoformat()
-    return txns
+def _plaid_error_code(exc: ApiException) -> str:
+    try:
+        return json.loads(exc.body).get("error_code", "")
+    except Exception:
+        return ""
 
 
-async def fetch_transactions(access_token: str, days: int = 90) -> list[dict]:
-    """Fetch ALL transactions in the window, following pagination past 500 rows."""
-    return await asyncio.to_thread(_fetch_transactions_sync, access_token, days)
+def _sync_transactions_once(
+    access_token: str, cursor: str | None
+) -> tuple[list[dict], list[dict], list[dict], str | None]:
+    added: list[dict] = []
+    modified: list[dict] = []
+    removed: list[dict] = []
+    next_cursor = cursor
+    has_more = True
+
+    while has_more:
+        kwargs: dict = {"access_token": access_token, "count": _PAGE_SIZE}
+        if next_cursor:
+            kwargs["cursor"] = next_cursor
+        response = client.transactions_sync(TransactionsSyncRequest(**kwargs))
+        added.extend(t.to_dict() for t in response["added"])
+        modified.extend(t.to_dict() for t in response["modified"])
+        removed.extend(r.to_dict() for r in response["removed"])
+        has_more = response["has_more"]
+        next_cursor = response["next_cursor"]
+
+    return added, modified, removed, next_cursor
+
+
+def _sync_transactions_blocking(
+    access_token: str, cursor: str | None
+) -> tuple[list[dict], list[dict], list[dict], str | None]:
+    for attempt in range(2):
+        try:
+            return _sync_transactions_once(access_token, cursor)
+        except ApiException as exc:
+            code = _plaid_error_code(exc)
+            if code == "PRODUCT_NOT_READY":
+                # Initial pull hasn't finished — a TRANSACTIONS webhook will
+                # announce data later. Not an error; report nothing changed.
+                return [], [], [], cursor
+            if code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" and attempt == 0:
+                # Item mutated mid-pagination — Plaid requires restarting from
+                # the last committed cursor.
+                continue
+            raise
+    raise RuntimeError("unreachable")
+
+
+async def sync_transactions(
+    access_token: str, cursor: str | None = None
+) -> tuple[list[dict], list[dict], list[dict], str | None]:
+    """Pull incremental transaction updates via Plaid /transactions/sync.
+
+    Returns (added, modified, removed, next_cursor). Pass cursor=None for the
+    first sync of an item; Plaid then returns its full history.
+    """
+    return await asyncio.to_thread(_sync_transactions_blocking, access_token, cursor)
 
 
 async def create_link_token(user_id: str, access_token: str | None = None) -> str:

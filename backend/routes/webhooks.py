@@ -14,9 +14,17 @@ from services.webhook_verification import verify_plaid_webhook
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-SYNC_TRIGGER_CODES = {"INITIAL_UPDATE", "HISTORICAL_UPDATE", "DEFAULT_UPDATE"}
+# All of these mean "new data is available via /transactions/sync" — including
+# TRANSACTIONS_REMOVED, since the sync cursor also delivers removals.
+SYNC_TRIGGER_CODES = {
+    "SYNC_UPDATES_AVAILABLE",
+    "INITIAL_UPDATE",
+    "HISTORICAL_UPDATE",
+    "DEFAULT_UPDATE",
+    "TRANSACTIONS_REMOVED",
+}
 
-TRANSACTIONS_CODES = SYNC_TRIGGER_CODES | {"TRANSACTIONS_REMOVED"}
+TRANSACTIONS_CODES = SYNC_TRIGGER_CODES
 
 # ITEM webhook codes that map directly to a LinkedAccount.status value
 ITEM_STATUS_BY_CODE = {

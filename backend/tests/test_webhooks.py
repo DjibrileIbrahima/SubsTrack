@@ -49,6 +49,7 @@ class TestWebhookBasics:
 
 class TestTransactionsWebhook:
     @pytest.mark.parametrize("code", [
+        "SYNC_UPDATES_AVAILABLE",
         "INITIAL_UPDATE",
         "HISTORICAL_UPDATE",
         "DEFAULT_UPDATE",
@@ -178,7 +179,14 @@ class TestItemWebhook:
 class TestWebhookSyncTrigger:
     """Verify that transaction update events enqueue a background sync."""
 
-    @pytest.mark.parametrize("code", ["INITIAL_UPDATE", "HISTORICAL_UPDATE", "DEFAULT_UPDATE"])
+    @pytest.mark.parametrize("code", [
+        "SYNC_UPDATES_AVAILABLE",
+        "INITIAL_UPDATE",
+        "HISTORICAL_UPDATE",
+        "DEFAULT_UPDATE",
+        # /transactions/sync also delivers removals, so this triggers a sync too
+        "TRANSACTIONS_REMOVED",
+    ])
     async def test_sync_enqueued_for_update_codes(self, client, code):
         with patch(
             "routes.webhooks.sync_subscriptions_for_item",
@@ -191,20 +199,6 @@ class TestWebhookSyncTrigger:
             })
         assert res.status_code == 200
         mock_sync.assert_awaited_once_with("item-sandbox-abc")
-
-    async def test_sync_not_enqueued_for_transactions_removed(self, client):
-        with patch(
-            "routes.webhooks.sync_subscriptions_for_item",
-            new_callable=AsyncMock,
-        ) as mock_sync:
-            res = await client.post("/api/webhooks/plaid", json={
-                "webhook_type": "TRANSACTIONS",
-                "webhook_code": "TRANSACTIONS_REMOVED",
-                "item_id": "item-sandbox-abc",
-                "removed_transactions": ["txn-1"],
-            })
-        assert res.status_code == 200
-        mock_sync.assert_not_awaited()
 
     async def test_sync_not_enqueued_when_item_id_missing(self, client):
         with patch(

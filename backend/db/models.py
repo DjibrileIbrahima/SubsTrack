@@ -50,9 +50,43 @@ class LinkedAccount(Base):
     institution_name: Mapped[str] = mapped_column(String, nullable=True)
     # "active" | "login_required" | "pending_expiration" | "revoked" — driven by ITEM webhooks
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
+    # Plaid /transactions/sync cursor — None means no sync has completed yet
+    sync_cursor: Mapped[str | None] = mapped_column(String(256), nullable=True)
     linked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="accounts")
+    transactions: Mapped[list["Transaction"]] = relationship(back_populates="account", cascade="all, delete")
+
+
+class Transaction(Base):
+    """Local copy of Plaid transactions, kept fresh via /transactions/sync.
+
+    positive amount = money out, matching Plaid's convention.
+    """
+
+    __tablename__ = "transactions"
+    __table_args__ = (
+        Index("ix_transactions_user_date", "user_id", "date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plaid_transaction_id: Mapped[str] = mapped_column(String(256), unique=True, index=True, nullable=False)
+    linked_account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("linked_accounts.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    merchant_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    category: Mapped[str | None] = mapped_column(String, nullable=True)
+    pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    account: Mapped["LinkedAccount"] = relationship(back_populates="transactions")
 
 
 class Subscription(Base):

@@ -43,6 +43,7 @@ SubsTrack/
 │   │   ├── subscription_detector.py
 │   │   ├── subscription_pipeline.py
 │   │   ├── subscription_sync.py
+│   │   ├── transaction_store.py    # Local txn table + Plaid /transactions/sync cursor
 │   │   ├── alert_service.py
 │   │   ├── email.py                # Resend integration
 │   │   └── webhook_verification.py

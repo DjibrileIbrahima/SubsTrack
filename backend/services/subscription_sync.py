@@ -9,12 +9,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import LinkedAccount, Subscription
-from services.encryption import decrypt
 from services.groq_client import groq_model_call
-from services.plaid_service import fetch_transactions
 from services.subscription_pipeline import run_subscription_pipeline
+from services.transaction_store import (
+    get_user_transactions,
+    sync_account_transactions,
+    to_detection_dicts,
+)
 
 logger = logging.getLogger(__name__)
+
+# How far back detection looks when scoring recurring charges
+DETECTION_WINDOW_DAYS = 90
 
 
 def to_money(value) -> Decimal:
@@ -85,7 +91,7 @@ async def upsert_detected_subscriptions(db: AsyncSession, user_id, detected: lis
 
 
 async def sync_subscriptions_for_item(item_id: str) -> None:
-    """Fetch fresh transactions from Plaid and upsert subscriptions for a linked account.
+    """Pull incremental Plaid updates and upsert subscriptions for a linked account.
 
     Designed to run as a FastAPI BackgroundTask — creates its own DB session and
     swallows all exceptions so a failure never surfaces to the caller.
@@ -102,8 +108,9 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 logger.warning("Webhook sync: no account found for item_id=%s", item_id)
                 return
 
-            txns = await fetch_transactions(decrypt(account.access_token))
-            detected = await detect_from_transactions(txns)
+            await sync_account_transactions(db, account)
+            rows = await get_user_transactions(db, account.user_id, DETECTION_WINDOW_DAYS)
+            detected = await detect_from_transactions(to_detection_dicts(rows))
             await upsert_detected_subscriptions(db, account.user_id, detected)
 
             logger.info(

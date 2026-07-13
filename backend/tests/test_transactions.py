@@ -6,35 +6,55 @@ import uuid
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
-from db.models import Subscription
+from db.models import Subscription, Transaction
 
 # ─── Plaid mock factory ───────────────────────────────────────────────────────
 
-def _make_plaid_txn(merchant="NETFLIX", amount=15.99, txn_date="2024-01-15"):
-    """Return a mock Plaid transaction object."""
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def _make_plaid_txn(merchant="NETFLIX", amount=15.99, txn_date="2024-01-15", txn_id=None):
+    """Return a mock Plaid transaction object (as delivered by /transactions/sync)."""
     mock = MagicMock()
     mock.to_dict.return_value = {
+        "transaction_id": txn_id or f"txn-{merchant}-{txn_date}-{amount}",
         "merchant_name": merchant,
         "name": merchant,
         "amount": amount,
         "date": txn_date,
         "category": ["Entertainment"],
+        "pending": False,
     }
     return mock
 
 
-def _plaid_get_response(*txns):
+def _plaid_sync_response(added=(), modified=(), removed=(), has_more=False, cursor="cursor-1"):
+    """Mock /transactions/sync response."""
     resp = MagicMock()
-    resp.__getitem__ = lambda self, k: list(txns) if k == "transactions" else None
-    return resp
-
-
-def _plaid_page_response(txns, total):
-    """Mock response with an explicit total_transactions, for pagination tests."""
-    resp = MagicMock()
-    data = {"transactions": list(txns), "total_transactions": total}
+    data = {
+        "added": list(added),
+        "modified": list(modified),
+        "removed": list(removed),
+        "has_more": has_more,
+        "next_cursor": cursor,
+    }
     resp.__getitem__ = lambda self, k: data.get(k)
     return resp
+
+
+def _make_txn_row(user_id, account_id, merchant="NETFLIX", amount=15.99, days_back=10):
+    """Build a stored Transaction row for seeding the test DB."""
+    return Transaction(
+        user_id=user_id,
+        linked_account_id=account_id,
+        plaid_transaction_id=f"txn-{uuid.uuid4()}",
+        amount=amount,
+        date=date.today() - timedelta(days=days_back),
+        name=merchant,
+        merchant_name=merchant,
+        category="Entertainment",
+    )
 
 
 # ─── GET /api/subscriptions/saved ────────────────────────────────────────────
@@ -360,22 +380,29 @@ class TestGetTransactions:
         assert r.status_code == 400
         assert "bank account" in r.json()["detail"].lower()
 
-    async def test_returns_plaid_transactions(self, auth_client, test_account):
-        txn = _make_plaid_txn("SPOTIFY", 9.99, "2024-03-01")
+    async def test_returns_stored_transactions(self, auth_client, test_account, db, test_user):
+        """Reads come from the local transactions table — no Plaid call."""
+        db.add(_make_txn_row(test_user.id, test_account.id, "SPOTIFY", 9.99, days_back=5))
+        await db.flush()
+
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(txn)
             r = await auth_client.get("/api/transactions")
 
         assert r.status_code == 200
         body = r.json()
         assert body["total"] == 1
         assert body["transactions"][0]["merchant_name"] == "SPOTIFY"
+        mock_plaid.transactions_sync.assert_not_called()
 
-    async def test_days_query_param(self, auth_client, test_account):
-        with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response()
-            r = await auth_client.get("/api/transactions?days=30")
+    async def test_days_query_param_filters_window(self, auth_client, test_account, db, test_user):
+        db.add(_make_txn_row(test_user.id, test_account.id, "RECENT", 5.0, days_back=10))
+        db.add(_make_txn_row(test_user.id, test_account.id, "OLD", 5.0, days_back=60))
+        await db.flush()
+
+        r = await auth_client.get("/api/transactions?days=30")
         assert r.status_code == 200
+        merchants = {t["merchant_name"] for t in r.json()["transactions"]}
+        assert merchants == {"RECENT"}
 
     async def test_days_param_out_of_range(self, auth_client, test_account):
         r = await auth_client.get("/api/transactions?days=0")
@@ -384,33 +411,92 @@ class TestGetTransactions:
         r = await auth_client.get("/api/transactions?days=400")
         assert r.status_code == 422
 
-    async def test_plaid_error_returns_500(self, auth_client, test_account):
-        with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.side_effect = Exception("Plaid timeout")
-            r = await auth_client.get("/api/transactions")
-        assert r.status_code == 500
+    async def test_does_not_leak_other_users_transactions(
+        self, auth_client, test_account, db, test_user, test_user2
+    ):
+        from db.models import LinkedAccount
+        from services.encryption import encrypt
+        other_account = LinkedAccount(
+            user_id=test_user2.id,
+            access_token=encrypt("access-sandbox-other-token"),
+            item_id="item-sandbox-other",
+            institution_name="Other Bank",
+        )
+        db.add(other_account)
+        await db.flush()
+        db.add(_make_txn_row(test_user2.id, other_account.id, "HIDDEN", 9.99, days_back=5))
+        db.add(_make_txn_row(test_user.id, test_account.id, "MINE", 5.0, days_back=5))
+        await db.flush()
+
+        r = await auth_client.get("/api/transactions")
+        assert r.status_code == 200
+        merchants = {t["merchant_name"] for t in r.json()["transactions"]}
+        assert merchants == {"MINE"}
 
     async def test_unauthenticated(self, client):
         r = await client.get("/api/transactions")
         assert r.status_code == 401
 
-    async def test_paginates_past_500_transactions(self, auth_client, test_account):
-        """More than one page of Plaid results must all be fetched, not truncated."""
-        page1 = [_make_plaid_txn(f"MERCHANT-{i}", 5.0, "2024-01-15") for i in range(500)]
-        page2 = [_make_plaid_txn(f"MERCHANT-{i}", 5.0, "2024-01-16") for i in range(500, 620)]
+
+# ─── POST /api/subscriptions/sync ────────────────────────────────────────────
+
+def _netflix_sync_txns():
+    """Three monthly Netflix charges inside the 90-day detection window."""
+    return [
+        _make_plaid_txn("NETFLIX", 15.99, _days_ago(n), txn_id=f"txn-netflix-{n}")
+        for n in (80, 50, 20)
+    ]
+
+
+class TestSyncSubscriptions:
+    async def test_sync_detects_and_saves_subscriptions(self, auth_client, test_account, db, test_user):
+        """Pipeline should detect Netflix as a subscription and persist it."""
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.side_effect = [
-                _plaid_page_response(page1, total=620),
-                _plaid_page_response(page2, total=620),
-            ]
-            r = await auth_client.get("/api/transactions")
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
+            r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
-        assert r.json()["total"] == 620
-        assert mock_plaid.transactions_get.call_count == 2
+        subs = r.json()["subscriptions"]
+        assert any(s["merchant"] == "Netflix" for s in subs)
 
-    async def test_fetches_all_linked_accounts(self, auth_client, test_account, db, test_user):
-        """Transactions from every linked bank must be merged, not just the first."""
+    async def test_sync_persists_transactions_and_cursor(self, auth_client, test_account, db, test_user):
+        """Synced transactions land in the local table and the cursor is stored."""
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(
+                added=_netflix_sync_txns(), cursor="cursor-after-sync",
+            )
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        from sqlalchemy import select
+        rows = (await db.execute(select(Transaction))).scalars().all()
+        assert len(rows) == 3
+        await db.refresh(test_account)
+        assert test_account.sync_cursor == "cursor-after-sync"
+
+    async def test_sync_paginates_until_has_more_is_false(self, auth_client, test_account, db):
+        page1 = _plaid_sync_response(
+            added=[_make_plaid_txn("SPOTIFY", 9.99, _days_ago(40), txn_id="txn-s1")],
+            has_more=True, cursor="cursor-mid",
+        )
+        page2 = _plaid_sync_response(
+            added=[_make_plaid_txn("SPOTIFY", 9.99, _days_ago(10), txn_id="txn-s2")],
+            has_more=False, cursor="cursor-end",
+        )
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.side_effect = [page1, page2]
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 200
+        assert mock_plaid.transactions_sync.call_count == 2
+        from sqlalchemy import select
+        rows = (await db.execute(select(Transaction))).scalars().all()
+        assert len(rows) == 2
+        await db.refresh(test_account)
+        assert test_account.sync_cursor == "cursor-end"
+
+    async def test_sync_covers_all_linked_accounts(self, auth_client, test_account, db, test_user):
+        """Every linked bank gets its own cursor sync."""
         from db.models import LinkedAccount
         from services.encryption import encrypt
         db.add(LinkedAccount(
@@ -422,33 +508,17 @@ class TestGetTransactions:
         await db.flush()
 
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.side_effect = [
-                _plaid_get_response(_make_plaid_txn("NETFLIX", 15.99, "2024-01-15")),
-                _plaid_get_response(_make_plaid_txn("SPOTIFY", 9.99, "2024-01-20")),
+            mock_plaid.transactions_sync.side_effect = [
+                _plaid_sync_response(added=[_make_plaid_txn("NETFLIX", 15.99, _days_ago(20), txn_id="txn-n1")]),
+                _plaid_sync_response(added=[_make_plaid_txn("SPOTIFY", 9.99, _days_ago(20), txn_id="txn-sp1")]),
             ]
-            r = await auth_client.get("/api/transactions")
-
-        assert r.status_code == 200
-        merchants = {t["merchant_name"] for t in r.json()["transactions"]}
-        assert merchants == {"NETFLIX", "SPOTIFY"}
-
-
-# ─── POST /api/subscriptions/sync ────────────────────────────────────────────
-
-class TestSyncSubscriptions:
-    async def test_sync_detects_and_saves_subscriptions(self, auth_client, test_account, db, test_user):
-        """Pipeline should detect Netflix as a subscription and persist it."""
-        txns = [
-            _make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01")
-            for m in range(1, 5)
-        ]
-        with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
             r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
-        subs = r.json()["subscriptions"]
-        assert any(s["merchant"] == "Netflix" for s in subs)
+        assert mock_plaid.transactions_sync.call_count == 2
+        from sqlalchemy import select
+        merchants = {t.merchant_name for t in (await db.execute(select(Transaction))).scalars()}
+        assert merchants == {"NETFLIX", "SPOTIFY"}
 
     async def test_sync_upserts_existing(self, auth_client, test_account, db, test_user):
         """Re-sync updates amount/frequency of existing plaid subscriptions."""
@@ -459,9 +529,8 @@ class TestSyncSubscriptions:
         db.add(existing)
         await db.flush()
 
-        txns = [_make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01") for m in range(1, 5)]
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
@@ -477,9 +546,8 @@ class TestSyncSubscriptions:
         db.add(cancelled)
         await db.flush()
 
-        txns = [_make_plaid_txn("NETFLIX", 15.99, f"2024-0{m}-01") for m in range(1, 5)]
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
 
         assert r.status_code == 200
@@ -502,38 +570,45 @@ class TestGetSummary:
         r = await auth_client.get("/api/summary")
         assert r.status_code == 400
 
-    async def test_groups_by_month(self, auth_client, test_account):
-        txns = [
-            _make_plaid_txn("NETFLIX", 15.99, "2024-01-15"),
-            _make_plaid_txn("SPOTIFY", 9.99, "2024-01-20"),
-            _make_plaid_txn("NETFLIX", 15.99, "2024-02-15"),
-        ]
+    async def test_groups_by_month(self, auth_client, test_account, db, test_user):
+        """Summary aggregates the stored transactions by month — no Plaid call."""
+        this_month = date.today().replace(day=15)
+        prev_month = (date.today().replace(day=1) - timedelta(days=1)).replace(day=15)
+
+        for merchant, amount, d in [
+            ("NETFLIX", 15.99, prev_month),
+            ("SPOTIFY", 9.99, prev_month),
+            ("NETFLIX", 15.99, this_month),
+        ]:
+            row = _make_txn_row(test_user.id, test_account.id, merchant, amount)
+            row.date = d
+            db.add(row)
+        await db.flush()
+
         with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
             r = await auth_client.get("/api/summary")
 
         assert r.status_code == 200
+        mock_plaid.transactions_sync.assert_not_called()
         summary = r.json()["monthly_summary"]
         months = {s["month"] for s in summary}
-        assert "2024-01" in months
-        assert "2024-02" in months
-        jan = next(s for s in summary if s["month"] == "2024-01")
-        assert abs(jan["total"] - 25.98) < 0.01
+        assert prev_month.isoformat()[:7] in months
+        assert this_month.isoformat()[:7] in months
+        prev = next(s for s in summary if s["month"] == prev_month.isoformat()[:7])
+        assert abs(prev["total"] - 25.98) < 0.01
 
-    async def test_ignores_negative_amounts(self, auth_client, test_account):
+    async def test_ignores_negative_amounts(self, auth_client, test_account, db, test_user):
         """Negative transactions (refunds) should be excluded from summary."""
-        txns = [
-            _make_plaid_txn("NETFLIX", 15.99, "2024-01-15"),
-            _make_plaid_txn("REFUND", -5.00, "2024-01-20"),  # negative
-        ]
-        with patch("services.plaid_service.client") as mock_plaid:
-            mock_plaid.transactions_get.return_value = _plaid_get_response(*txns)
-            r = await auth_client.get("/api/summary")
+        db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
+        db.add(_make_txn_row(test_user.id, test_account.id, "REFUND", -5.00, days_back=10))
+        await db.flush()
 
+        r = await auth_client.get("/api/summary")
         assert r.status_code == 200
-        jan = next((s for s in r.json()["monthly_summary"] if s["month"] == "2024-01"), None)
-        assert jan is not None
-        assert abs(jan["total"] - 15.99) < 0.01
+        month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        entry = next((s for s in r.json()["monthly_summary"] if s["month"] == month), None)
+        assert entry is not None
+        assert abs(entry["total"] - 15.99) < 0.01
 
     async def test_unauthenticated(self, client):
         r = await client.get("/api/summary")

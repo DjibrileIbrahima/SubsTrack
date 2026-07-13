@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -11,41 +11,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.deps import get_current_user
-from db.models import LinkedAccount, Subscription, User
+from db.models import LinkedAccount, Subscription, Transaction, User
 from limiter import limiter
-from services.encryption import decrypt
-from services.plaid_service import fetch_transactions
 from services.subscription_sync import (
+    DETECTION_WINDOW_DAYS,
     detect_from_transactions,
     to_money,
     upsert_detected_subscriptions,
+)
+from services.transaction_store import (
+    get_user_transactions,
+    serialize_transaction,
+    sync_account_transactions,
+    to_detection_dicts,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def get_access_tokens(user: User, db: AsyncSession) -> list[str]:
-    """Fetch and decrypt the Plaid access tokens for every linked account."""
+async def get_linked_accounts(user: User, db: AsyncSession) -> list[LinkedAccount]:
+    """Return the user's linked accounts, or 400 if none are connected."""
     result = await db.execute(
         select(LinkedAccount).where(LinkedAccount.user_id == user.id)
     )
-    accounts = result.scalars().all()
+    accounts = list(result.scalars().all())
     if not accounts:
         raise HTTPException(
             status_code=400,
             detail="No bank account connected. Please connect your bank first."
         )
-    return [decrypt(a.access_token) for a in accounts]
-
-
-async def fetch_all_transactions(tokens: list[str], days: int) -> list[dict]:
-    """Fetch and merge transactions across all linked accounts, newest first."""
-    txns: list[dict] = []
-    for token in tokens:
-        txns.extend(await fetch_transactions(token, days))
-    txns.sort(key=lambda t: t.get("date") or "", reverse=True)
-    return txns
+    return accounts
 
 
 def serialize_sub(s) -> dict:
@@ -92,10 +88,14 @@ async def get_transactions(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    tokens = await get_access_tokens(current_user, db)
+    """Read stored transactions — kept fresh by webhooks and /subscriptions/sync."""
+    await get_linked_accounts(current_user, db)
     try:
-        txns = await fetch_all_transactions(tokens, days)
-        return {"transactions": txns, "total": len(txns)}
+        rows = await get_user_transactions(db, current_user.id, days)
+        return {
+            "transactions": [serialize_transaction(r) for r in rows],
+            "total": len(rows),
+        }
     except Exception:
         logger.exception("Failed to fetch transactions")
         raise HTTPException(status_code=500, detail="Failed to fetch transactions")
@@ -122,10 +122,12 @@ async def sync_subscriptions(
     current_user: User = Depends(get_current_user),
 ):
     """Sync subscriptions from Plaid and update DB. POST because it writes."""
-    tokens = await get_access_tokens(current_user, db)
+    accounts = await get_linked_accounts(current_user, db)
     try:
-        txns = await fetch_all_transactions(tokens, days=90)
-        detected = await detect_from_transactions(txns)
+        for account in accounts:
+            await sync_account_transactions(db, account)
+        rows = await get_user_transactions(db, current_user.id, DETECTION_WINDOW_DAYS)
+        detected = await detect_from_transactions(to_detection_dicts(rows))
         await upsert_detected_subscriptions(db, current_user.id, detected)
         return await _active_subscriptions_response(db, current_user.id)
     except Exception:
@@ -139,19 +141,22 @@ async def get_spending_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    tokens = await get_access_tokens(current_user, db)
+    """Monthly spend over the stored transactions — a single DB query, no Plaid calls."""
+    await get_linked_accounts(current_user, db)
     try:
-        txns = await fetch_all_transactions(tokens, days=180)
+        cutoff = date.today() - timedelta(days=180)
+        result = await db.execute(
+            select(Transaction.date, Transaction.amount).where(
+                Transaction.user_id == current_user.id,
+                Transaction.date >= cutoff,
+                Transaction.amount > 0,  # positive = money out (Plaid convention)
+            )
+        )
 
-        monthly = {}
-        for t in txns:
-            amount = t.get("amount", 0)
-            if not amount or amount <= 0:
-                continue
-
-            d = t["date"] if isinstance(t["date"], str) else t["date"].isoformat()
-            month = d[:7]
-            monthly[month] = monthly.get(month, 0) + amount
+        monthly: dict[str, float] = {}
+        for txn_date, amount in result.all():
+            month = txn_date.isoformat()[:7]
+            monthly[month] = monthly.get(month, 0) + float(amount)
 
         summary = [{"month": k, "total": round(v, 2)} for k, v in sorted(monthly.items())]
         return {"monthly_summary": summary}
