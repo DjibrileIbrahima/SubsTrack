@@ -161,3 +161,35 @@ class TestPlaidSyncWrapper:
             mock_client.transactions_sync.side_effect = self._api_exception("RATE_LIMIT_EXCEEDED")
             with pytest.raises(ApiException):
                 await plaid_service.sync_transactions("tok", None)
+
+
+class TestRemoveItem:
+    """plaid_service.remove_item — revocation at Plaid on unlink."""
+
+    def _api_exception(self, error_code):
+        from plaid.exceptions import ApiException
+        exc = ApiException(status=400, reason="plaid error")
+        exc.body = json.dumps({"error_code": error_code})
+        return exc
+
+    async def test_calls_item_remove(self):
+        from services import plaid_service
+        with patch("services.plaid_service.client") as mock_client:
+            await plaid_service.remove_item("tok-123")
+        mock_client.item_remove.assert_called_once()
+
+    async def test_already_removed_item_is_success(self):
+        from services import plaid_service
+        with patch("services.plaid_service.client") as mock_client:
+            mock_client.item_remove.side_effect = self._api_exception("ITEM_NOT_FOUND")
+            await plaid_service.remove_item("tok-123")  # must not raise
+
+    async def test_other_errors_propagate(self):
+        import pytest
+        from plaid.exceptions import ApiException
+
+        from services import plaid_service
+        with patch("services.plaid_service.client") as mock_client:
+            mock_client.item_remove.side_effect = self._api_exception("INTERNAL_SERVER_ERROR")
+            with pytest.raises(ApiException):
+                await plaid_service.remove_item("tok-123")

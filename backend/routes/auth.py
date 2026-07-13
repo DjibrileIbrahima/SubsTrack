@@ -477,6 +477,19 @@ async def unlink_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    # Revoke at Plaid BEFORE local cleanup: if this fails the account row
+    # survives and the user can retry; the reverse order would orphan a live
+    # token at Plaid (connection stays open, item billing continues).
+    # remove_item treats an already-removed item as success, so retries work.
+    try:
+        await plaid_service.remove_item(decrypt(account.access_token))
+    except Exception:
+        logger.exception("Plaid item removal failed for account %s", account_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to disconnect the bank from Plaid. Please try again.",
+        )
+
     try:
         # Only deactivate subscriptions that came from THIS bank. Legacy rows
         # (linked_account_id NULL, from before attribution existed) are swept

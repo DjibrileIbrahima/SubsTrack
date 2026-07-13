@@ -10,6 +10,7 @@ import json
 
 from plaid.exceptions import ApiException
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
@@ -101,6 +102,22 @@ async def create_link_token(user_id: str, access_token: str | None = None) -> st
         return response["link_token"]
 
     return await asyncio.to_thread(_call)
+
+
+async def remove_item(access_token: str) -> None:
+    """Revoke an access token at Plaid (severs the bank connection and stops
+    item billing). An item that's already gone at Plaid counts as success —
+    unlink must stay retryable after a partial failure.
+    """
+    def _call() -> None:
+        try:
+            client.item_remove(ItemRemoveRequest(access_token=access_token))
+        except ApiException as exc:
+            if _plaid_error_code(exc) == "ITEM_NOT_FOUND":
+                return
+            raise
+
+    await asyncio.to_thread(_call)
 
 
 async def exchange_public_token(public_token: str) -> tuple[str, str | None]:

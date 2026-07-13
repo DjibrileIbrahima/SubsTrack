@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy import select
 
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
@@ -501,10 +502,41 @@ class TestGetAccounts:
 # ─── DELETE /api/auth/accounts/{id} ─────────────────────────────────────────
 
 class TestUnlinkAccount:
+    @pytest.fixture(autouse=True)
+    def mock_item_remove(self):
+        """Unlink revokes the item at Plaid — never call the real API in tests."""
+        with patch("routes.auth.plaid_service.remove_item", new_callable=AsyncMock) as m:
+            yield m
+
     async def test_unlink_success(self, auth_client, db, test_account):
         r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
         assert r.status_code == 200
         assert r.json()["message"] == "Account unlinked"
+
+    async def test_unlink_revokes_item_at_plaid(self, auth_client, test_account, mock_item_remove):
+        r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        assert r.status_code == 200
+        mock_item_remove.assert_awaited_once_with("access-sandbox-fake-token")
+
+    async def test_plaid_failure_returns_502_and_keeps_account(
+        self, auth_client, db, test_user, test_account, mock_item_remove
+    ):
+        """If Plaid revocation fails, nothing is deleted locally — retryable."""
+        sub = Subscription(
+            user_id=test_user.id, linked_account_id=test_account.id,
+            merchant="Netflix", amount=15.99, frequency="monthly", source="plaid",
+        )
+        db.add(sub)
+        await db.flush()
+
+        mock_item_remove.side_effect = Exception("Plaid is down")
+        r = await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
+        assert r.status_code == 502
+
+        result = await db.execute(select(LinkedAccount).where(LinkedAccount.id == test_account.id))
+        assert result.scalar_one_or_none() is not None
+        await db.refresh(sub)
+        assert sub.is_active is True
 
     async def test_account_removed_from_db(self, auth_client, db, test_account):
         await auth_client.delete(f"/api/auth/accounts/{test_account.id}")
