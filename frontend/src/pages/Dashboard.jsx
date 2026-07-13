@@ -6,14 +6,6 @@ import AddManualForm from '../components/AddManualForm'
 import SpendingChart from '../components/SpendingChart'
 import CategoryChart from '../components/CategoryChart'
 
-const MONTHLY_FACTOR = {
-  weekly: 4.33,
-  biweekly: 2.17,
-  monthly: 1,
-  quarterly: 1 / 3,
-  yearly: 1 / 12,
-}
-
 function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -43,6 +35,7 @@ export default function Dashboard() {
   const [summary, setSummary] = useState([])
   const [accounts, setAccounts] = useState([])
   const [monthlyTotal, setMonthlyTotal] = useState(0)
+  const [annualEstimate, setAnnualEstimate] = useState(0)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [showForm, setShowForm] = useState(false)
@@ -61,6 +54,7 @@ export default function Dashboard() {
 
       setSubs(subsData.subscriptions || [])
       setMonthlyTotal(subsData.total_monthly_spend || 0)
+      setAnnualEstimate(subsData.annual_estimate || 0)
       setSummary(summaryData || [])
       setAccounts(accountsData || [])
     } catch {
@@ -82,6 +76,7 @@ export default function Dashboard() {
       const data = await syncSubscriptions()
       setSubs(data.subscriptions || [])
       setMonthlyTotal(data.total_monthly_spend || 0)
+      setAnnualEstimate(data.annual_estimate || 0)
 
       const refreshedSummary = await getSummary().catch(() => [])
       setSummary(refreshedSummary || [])
@@ -97,10 +92,6 @@ export default function Dashboard() {
     await fetchData()
     await handleSync()
   })
-
-  const annualEstimate = subs.reduce((acc, s) => {
-    return acc + (s.amount || 0) * (MONTHLY_FACTOR[s.frequency] || 1)
-  }, 0) * 12
 
   const dueSoon = getDueSoon(subs)
 

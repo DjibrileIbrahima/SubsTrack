@@ -61,7 +61,7 @@ const MOCK_SUBS = [
 ]
 
 function setupDefaultMocks({ accounts = [], subs = MOCK_SUBS, summary = [] } = {}) {
-  getSavedSubscriptions.mockResolvedValue({ subscriptions: subs, total_monthly_spend: 25.98 })
+  getSavedSubscriptions.mockResolvedValue({ subscriptions: subs, total_monthly_spend: 25.98, annual_estimate: 311.76 })
   getSummary.mockResolvedValue(summary)
   getAccounts.mockResolvedValue(accounts)
   usePlaid.mockReturnValue({ initAndOpen: vi.fn(), loading: false, error: null })
@@ -197,7 +197,7 @@ describe('Dashboard — Add manually', () => {
 
 describe('Dashboard — sync', () => {
   it('calls syncSubscriptions when sync button clicked', async () => {
-    syncSubscriptions.mockResolvedValue({ subscriptions: MOCK_SUBS, total_monthly_spend: 25.98 })
+    syncSubscriptions.mockResolvedValue({ subscriptions: MOCK_SUBS, total_monthly_spend: 25.98, annual_estimate: 311.76 })
     getSummary.mockResolvedValue([])
     setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
 
@@ -223,13 +223,13 @@ describe('Dashboard — sync', () => {
 })
 
 describe('Dashboard — annual estimate', () => {
-  it('calculates and displays annual estimate correctly', async () => {
-    // $15.99/mo * 12 + $9.99/mo * 12 = $311.76
+  it('displays the backend-provided annual estimate', async () => {
     setupDefaultMocks()
     render(<Dashboard />)
     await waitFor(() => {
-      // Annual est. card should exist
       expect(screen.getByText('Annual Est.')).toBeInTheDocument()
+      // 311.76 from the API response, rounded and locale-formatted
+      expect(screen.getByText('$312')).toBeInTheDocument()
     })
   })
 })

@@ -86,6 +86,24 @@ class TestGetSavedSubscriptions:
         assert r.status_code == 200
         assert abs(r.json()["total_monthly_spend"] - 25.98) < 0.01
 
+    async def test_monthly_total_includes_all_frequencies_as_monthly_equivalent(
+        self, auth_client, db, test_user
+    ):
+        """A $120/year and a $10/week sub must show real monthly spend, not $0."""
+        db.add(Subscription(user_id=test_user.id, merchant="Yearly Service", amount=120.00,
+                            frequency="yearly", source="manual"))
+        db.add(Subscription(user_id=test_user.id, merchant="Weekly Service", amount=10.00,
+                            frequency="weekly", source="manual"))
+        await db.flush()
+
+        r = await auth_client.get("/api/subscriptions/saved")
+        assert r.status_code == 200
+        body = r.json()
+        # 120/12 + 10*4.33 = 10 + 43.30 = 53.30
+        assert abs(body["total_monthly_spend"] - 53.30) < 0.01
+        # annual estimate is the same monthly-equivalent number x 12
+        assert abs(body["annual_estimate"] - 639.60) < 0.01
+
     async def test_excludes_inactive_subscriptions(self, auth_client, db, test_user):
         db.add(Subscription(user_id=test_user.id, merchant="Dead", amount=5.0,
                             frequency="monthly", source="manual", is_active=False))

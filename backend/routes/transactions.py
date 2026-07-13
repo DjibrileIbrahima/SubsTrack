@@ -67,6 +67,17 @@ def serialize_sub(s) -> dict:
     }
 
 
+# Average charges per month for each billing frequency — the single source of
+# truth for the dashboard's Monthly Spend and Annual Est. cards.
+MONTHLY_FACTOR = {
+    "weekly": 4.33,
+    "biweekly": 2.17,
+    "monthly": 1.0,
+    "quarterly": 1 / 3,
+    "yearly": 1 / 12,
+}
+
+
 async def _active_subscriptions_response(db: AsyncSession, user_id) -> dict:
     result = await db.execute(
         select(Subscription).where(
@@ -75,10 +86,15 @@ async def _active_subscriptions_response(db: AsyncSession, user_id) -> dict:
         )
     )
     serialized = [serialize_sub(s) for s in result.scalars().all()]
-    total_monthly = sum(s["amount"] for s in serialized if s["frequency"] == "monthly")
+    # Monthly-equivalent spend across ALL frequencies, so a $120/year sub
+    # shows as $10/month instead of being ignored.
+    total_monthly = sum(
+        s["amount"] * MONTHLY_FACTOR.get(s["frequency"], 1.0) for s in serialized
+    )
     return {
         "subscriptions": serialized,
         "total_monthly_spend": round(total_monthly, 2),
+        "annual_estimate": round(total_monthly * 12, 2),
         "count": len(serialized),
     }
 
