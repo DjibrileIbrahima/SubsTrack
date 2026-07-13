@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -9,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import User
-from services.jwt import decode_access_token
+from services.jwt import JWT_EXPIRE_MINUTES, decode_access_token
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 _redis_pool: aioredis.Redis | None = None
+
+_TOKEN_MIN_IAT_PREFIX = "token_min_iat:"
 
 
 def _get_redis_pool() -> aioredis.Redis:
@@ -24,6 +27,15 @@ def _get_redis_pool() -> aioredis.Redis:
 
 async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
     yield _get_redis_pool()
+
+
+async def revoke_user_sessions(redis: aioredis.Redis, user_id: str) -> None:
+    """Invalidate every token issued before now for this user (e.g. after a
+    password reset). The marker expires when the oldest possibly-live token
+    would have expired anyway."""
+    await redis.setex(
+        f"{_TOKEN_MIN_IAT_PREFIX}{user_id}", JWT_EXPIRE_MINUTES * 60, int(time.time())
+    )
 
 
 async def get_current_user(
@@ -38,6 +50,12 @@ async def get_current_user(
     jti = payload.get("jti")
     if jti and await redis.get(f"token_blocklist:{jti}"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+    min_iat = await redis.get(f"{_TOKEN_MIN_IAT_PREFIX}{payload['sub']}")
+    if min_iat is not None:
+        iat = payload.get("iat")
+        # Tokens without iat predate revocation support — fail closed.
+        if iat is None or int(iat) < int(min_iat):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
     try:
         user_id = uuid.UUID(payload["sub"])
     except (ValueError, AttributeError, TypeError):

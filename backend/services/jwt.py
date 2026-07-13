@@ -14,9 +14,18 @@ if not JWT_SECRET:
 
 
 def create_access_token(user_id: str) -> str:
-    """Create a signed JWT token for a user."""
-    expire = datetime.now(UTC) + timedelta(minutes=JWT_EXPIRE_MINUTES)
-    payload = {"sub": user_id, "exp": expire, "jti": str(uuid.uuid4())}
+    """Create a signed JWT token for a user.
+
+    iat enables per-user revocation: tokens issued before a user's
+    token_min_iat marker (see db/deps.py) are rejected.
+    """
+    now = datetime.now(UTC)
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
+        "jti": str(uuid.uuid4()),
+    }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 

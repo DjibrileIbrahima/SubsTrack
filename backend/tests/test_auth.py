@@ -205,6 +205,83 @@ class TestUpdateMe:
         assert r.json()["alert_sms"] is True
 
 
+# ─── Session revocation (token_min_iat) ──────────────────────────────────────
+
+class TestSessionRevocation:
+    def _min_iat_getter(self, min_iat_value):
+        """Redis .get stub: returns min_iat for revocation keys, None otherwise."""
+        def _get(key):
+            if key.startswith("token_min_iat:"):
+                return str(min_iat_value)
+            return None
+        return _get
+
+    async def test_reset_password_revokes_existing_sessions(
+        self, client, db, test_user, mock_redis_dep
+    ):
+        token = "plain-reset-token-abc"
+        db.add(PasswordResetToken(
+            user_id=test_user.id,
+            token=_hash_reset_token(token),
+            expires_at=_utcnow() + timedelta(hours=1),
+        ))
+        await db.flush()
+
+        r = await client.post(
+            "/api/auth/reset-password",
+            json={"token": token, "password": "newpassword123"},
+        )
+        assert r.status_code == 200
+        revocation_keys = [
+            c.args[0] for c in mock_redis_dep.setex.call_args_list
+            if c.args[0].startswith("token_min_iat:")
+        ]
+        assert revocation_keys == [f"token_min_iat:{test_user.id}"]
+
+    async def test_token_issued_before_revocation_is_rejected(
+        self, auth_client, mock_redis_dep
+    ):
+        future = int(datetime.now(UTC).timestamp()) + 10
+        mock_redis_dep.get.side_effect = self._min_iat_getter(future)
+
+        r = await auth_client.get("/api/auth/me")
+        assert r.status_code == 401
+        assert "revoked" in r.json()["detail"].lower()
+
+    async def test_token_issued_after_revocation_is_accepted(
+        self, auth_client, mock_redis_dep
+    ):
+        past = int(datetime.now(UTC).timestamp()) - 100
+        mock_redis_dep.get.side_effect = self._min_iat_getter(past)
+
+        r = await auth_client.get("/api/auth/me")
+        assert r.status_code == 200
+
+    async def test_legacy_token_without_iat_fails_closed(
+        self, client, test_user, mock_redis_dep
+    ):
+        """Pre-revocation-support tokens have no iat — must be rejected once
+        a revocation marker exists."""
+        import jwt as pyjwt
+
+        from services.jwt import JWT_ALGORITHM, JWT_SECRET
+        legacy = pyjwt.encode(
+            {
+                "sub": str(test_user.id),
+                "exp": datetime.now(UTC) + timedelta(hours=1),
+                "jti": str(uuid.uuid4()),
+            },
+            JWT_SECRET,
+            algorithm=JWT_ALGORITHM,
+        )
+        client.cookies.set("access_token", legacy)
+        past = int(datetime.now(UTC).timestamp()) - 100
+        mock_redis_dep.get.side_effect = self._min_iat_getter(past)
+
+        r = await client.get("/api/auth/me")
+        assert r.status_code == 401
+
+
 # ─── GET /api/auth/google ─────────────────────────────────────────────────────
 
 class TestGoogleLogin:

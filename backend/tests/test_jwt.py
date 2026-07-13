@@ -33,6 +33,13 @@ class TestCreateAccessToken:
         assert "exp" in payload
         assert "jti" in payload
 
+    def test_token_includes_iat(self):
+        """iat is required for per-user session revocation (token_min_iat)."""
+        token = create_access_token("test-user")
+        payload = decode_access_token(token)
+        now = datetime.now(UTC).timestamp()
+        assert abs(payload["iat"] - now) < 60
+
 
 class TestDecodeAccessToken:
     def test_valid_token_returns_payload_with_sub(self):

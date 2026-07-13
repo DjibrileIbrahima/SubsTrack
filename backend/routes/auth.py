@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.deps import get_current_user, get_redis
+from db.deps import get_current_user, get_redis, revoke_user_sessions
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from limiter import limiter
 from services import plaid_service
@@ -347,7 +347,12 @@ class ResetPasswordRequest(BaseModel):
 
 @router.post("/reset-password")
 @limiter.limit("5/minute")
-async def reset_password(request: Request, body: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def reset_password(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     result = await db.execute(
@@ -361,6 +366,9 @@ async def reset_password(request: Request, body: ResetPasswordRequest, db: Async
     user.hashed_password = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     reset.used = True
     await db.commit()
+    # People reset passwords because they suspect compromise — kill every
+    # session issued before this moment.
+    await revoke_user_sessions(redis, str(user.id))
     return {"message": "Password updated"}
 
 
