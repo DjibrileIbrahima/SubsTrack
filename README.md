@@ -9,7 +9,7 @@ A subscription tracker built with FastAPI, React, PostgreSQL, and Plaid.
 - **Cache / Queue / Revocation:** Redis 7 (Docker, AOF persistence)
 - **Banking:** Plaid API (Sandbox → Production)
 - **Email alerts:** Resend API
-- **Observability:** Sentry · Prometheus · OpenTelemetry · structured JSON logging
+- **Observability:** Sentry · Prometheus · OpenTelemetry · structured JSON logging — activation guide in [OBSERVABILITY.md](OBSERVABILITY.md)
 
 ## Project Structure
 ```
