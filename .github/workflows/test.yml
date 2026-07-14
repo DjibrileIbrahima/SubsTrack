@@ -140,5 +140,9 @@ jobs:
             cd /opt/substrack
             git pull
             sudo /opt/substrack/load-secrets.sh
+            # Migrations run in the backend container's CMD (alembic upgrade
+            # head && uvicorn), before the app serves traffic. Do NOT also run
+            # them here: exec-ing a second `alembic upgrade head` while the
+            # container's own run is mid-flight races it (DuplicateColumnError
+            # on 2026-07-13).
             sudo docker-compose up --build -d
-            sudo docker-compose exec -T backend python -m alembic upgrade head
