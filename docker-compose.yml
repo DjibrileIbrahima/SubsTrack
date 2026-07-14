@@ -68,6 +68,13 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Cloudflare Origin CA cert + key. Create these on the host BEFORE
+      # starting (nginx exits if they're missing):
+      #   /etc/ssl/substrack/origin.crt
+      #   /etc/ssl/substrack/origin.key   (chmod 600)
+      - /etc/ssl/substrack:/etc/nginx/ssl:ro
     depends_on:
       - backend
 
