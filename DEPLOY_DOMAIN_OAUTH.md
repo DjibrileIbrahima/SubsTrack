@@ -1,154 +1,178 @@
-# Domain + Google OAuth Setup Guide
+# Domain, HTTPS + Google OAuth Setup Guide
 
-This guide covers adding a custom domain with HTTPS via Cloudflare and enabling Google OAuth.
-Follow this after the app is already running on EC2 (see DEPLOY_AWS.md).
+How to put the app behind a custom domain (or subdomain) with HTTPS via
+Cloudflare, and enable Google OAuth. Follow this after the app is already
+running on EC2 (see DEPLOY_AWS.md).
+
+This reflects the setup performed on 2026-07-14 for `substrack.sahelcom.com`.
+Replace `app.yourdomain.com` / `yourdomain.com` with your names throughout.
+
+**Order matters:** the Origin CA certificate must be installed on the server
+(step 3) before the HTTPS nginx config is deployed — nginx exits at startup
+if the cert files are missing.
 
 ---
 
-## 1. Buy a Domain
+## 1. Cloudflare — domain and DNS
 
-Recommended registrars (cheapest):
-- [Cloudflare Registrar](https://www.cloudflare.com/products/registrar/) — at-cost pricing, no markup (~$8-10/year for .com)
-- [Namecheap](https://www.namecheap.com) — often has .com for $8-10/year
+### Add the domain
+- [cloudflare.com](https://cloudflare.com) → **Add a domain** → enter `yourdomain.com` → **Free** plan
+- At your registrar, replace the nameservers with the two Cloudflare provides
+- Propagation takes minutes to ~24h; Cloudflare emails you when active
 
----
+### Add the DNS record
+A subdomain costs nothing — it's just a DNS record under a domain you own.
 
-## 2. Set up Cloudflare
-
-### Create a Cloudflare account
-- Go to [cloudflare.com](https://cloudflare.com) → Sign up (free plan is fine)
-
-### Add your domain
-- Click **Add a domain** → enter your domain (e.g. `substrack.com`)
-- Select the **Free** plan
-- Cloudflare will scan existing DNS records → review and continue
-
-### Update nameservers at your registrar
-Cloudflare will give you two nameservers like:
-```
-aria.ns.cloudflare.com
-bob.ns.cloudflare.com
-```
-Go to your registrar (wherever you bought the domain) → find **DNS** or **Nameservers** settings → replace existing nameservers with the two Cloudflare ones.
-
-Propagation takes a few minutes to 24 hours. Cloudflare will email you when active.
-
-### Add DNS A record
-Once your domain is active in Cloudflare:
-- **DNS → Records → Add record**
+**DNS → Records → Add record**
 
 | Field | Value |
 |---|---|
 | Type | `A` |
-| Name | `@` |
+| Name | `app` (→ `app.yourdomain.com`) or `@` for the root |
 | IPv4 address | Your EC2 Elastic IP |
 | Proxy status | **Proxied** (orange cloud) |
 
-Optionally add `www` too:
+---
 
-| Field | Value |
-|---|---|
-| Type | `A` |
-| Name | `www` |
-| IPv4 address | Your EC2 Elastic IP |
-| Proxy status | **Proxied** (orange cloud) |
+## 2. Cloudflare — Origin CA certificate
 
-### Set SSL mode
-- Cloudflare → **SSL/TLS → Overview**
-- Select **Full (strict)**
+Cloudflare's **Full (strict)** SSL mode requires a certificate the origin
+(our nginx) presents to Cloudflare. The free Origin CA cert is valid 15 years
+with no renewal automation needed. (Do NOT use "Flexible" — traffic between
+Cloudflare and the origin would be unencrypted; this app carries financial
+data. Plain "Full" is acceptable only as a stopgap.)
 
-This gives you free HTTPS with no Certbot or cert renewals needed. Cloudflare handles it all.
+- Cloudflare → your domain → **SSL/TLS → Origin Server → Create Certificate**
+- Defaults are fine: *Generate private key and CSR with Cloudflare*, **RSA (2048)**
+- Hostnames: `yourdomain.com` and `*.yourdomain.com` (the wildcard covers any subdomain)
+- Validity: **15 years** → **Create**
+- The **Private Key is shown only once** — keep the page open until step 3 is done
 
 ---
 
-## 3. Update the backend `.env` on the server
+## 3. Install the certificate on EC2
 
-SSH into your EC2 instance and edit the `.env`:
+The cert lives OUTSIDE the repo checkout (`/opt/substrack` is a git working
+tree — never keep private keys in it). docker-compose mounts this directory
+read-only into the nginx container.
 
 ```bash
-nano /opt/substrack/backend/.env
+sudo mkdir -p /etc/ssl/substrack
+sudo nano /etc/ssl/substrack/origin.crt   # paste the Origin Certificate block
+sudo nano /etc/ssl/substrack/origin.key   # paste the Private Key block
+sudo chmod 600 /etc/ssl/substrack/origin.key
 ```
 
-Update these values:
-
-```env
-FRONTEND_URL=https://yourdomain.com
-CORS_ORIGINS=https://yourdomain.com
-COOKIE_SECURE=true
-GOOGLE_REDIRECT_URI=https://yourdomain.com/api/auth/google/callback
-```
-
----
-
-## 4. Set up Google OAuth
-
-### Create a Google Cloud project
-- Go to [console.cloud.google.com](https://console.cloud.google.com)
-- Use your **personal Google account** — no need to create a separate one
-- Click the project dropdown at the top → **New Project**
-- Name it `SubsTrack` → **Create**
-
-### Configure OAuth consent screen
-- Left sidebar → **APIs & Services → OAuth consent screen**
-- User type: **External** → **Create**
-- Fill in:
-  - App name: `SubsTrack`
-  - User support email: your email
-  - Developer contact email: your email
-  - Authorized domains: `yourdomain.com`
-- Click through the rest with defaults → **Save and Continue** until done
-
-### Create OAuth credentials
-- Left sidebar → **Credentials → Create Credentials → OAuth 2.0 Client ID**
-- Application type: **Web application**
-- Name: `SubsTrack`
-- Under **Authorized JavaScript origins** → Add:
-  ```
-  https://yourdomain.com
-  ```
-- Under **Authorized redirect URIs** → Add:
-  ```
-  https://yourdomain.com/api/auth/google/callback
-  ```
-- Click **Create**
-
-### Copy credentials into `.env`
-A popup will show your **Client ID** and **Client Secret**. Add them to the `.env` on the server:
-
-```env
-GOOGLE_CLIENT_ID=your_actual_client_id
-GOOGLE_CLIENT_SECRET=your_actual_client_secret
-```
-
----
-
-## 5. Rebuild and restart containers
+Verify:
 
 ```bash
+sudo openssl x509 -in /etc/ssl/substrack/origin.crt -noout -subject -enddate
+sudo openssl rsa  -in /etc/ssl/substrack/origin.key -check -noout   # → "RSA key ok"
+```
+
+### Open port 443
+EC2 console → instance **Security group → Edit inbound rules → Add rule**:
+Type **HTTPS**, port **443**, source `0.0.0.0/0` (or restrict to
+[Cloudflare's IP ranges](https://www.cloudflare.com/ips/) since all traffic
+should arrive through the proxy).
+
+The nginx 443 server block, compose port mapping, and cert mount are already
+in the repo (`frontend/nginx.conf`, `docker-compose.yml`) — they deploy with
+the next push. Port 80 just 301-redirects to HTTPS.
+
+---
+
+## 4. Parameter Store — all config lives in SSM, never in `.env`
+
+**Do not hand-edit `/opt/substrack/backend/.env`** — `load-secrets.sh`
+regenerates it from SSM Parameter Store on every deploy, wiping manual edits.
+
+Set these (AWS console → **Systems Manager → Parameter Store**, or CLI):
+
+```bash
+aws ssm put-parameter --overwrite --name /substrack/FRONTEND_URL        --value "https://app.yourdomain.com" --type String
+aws ssm put-parameter --overwrite --name /substrack/CORS_ORIGINS        --value "https://app.yourdomain.com" --type String
+aws ssm put-parameter --overwrite --name /substrack/GOOGLE_REDIRECT_URI --value "https://app.yourdomain.com/api/auth/google/callback" --type String
+aws ssm put-parameter --overwrite --name /substrack/COOKIE_SECURE       --value "true" --type String
+aws ssm put-parameter --overwrite --name /substrack/PLAID_WEBHOOK_URL   --value "https://app.yourdomain.com/api/webhooks/plaid" --type String
+```
+
+`PLAID_WEBHOOK_URL` is what lets Plaid push ITEM/TRANSACTIONS webhooks
+(instant "reconnect required" statuses instead of finding out on the next sync).
+
+Then reload on the server:
+
+```bash
+sudo /opt/substrack/load-secrets.sh        # absolute path — works from any directory
 cd /opt/substrack
-sudo docker-compose up --build -d
+sudo docker-compose up -d --force-recreate backend worker
 ```
 
 ---
 
-## 6. Verify
+## 5. Cloudflare — SSL mode
 
-- Open `https://yourdomain.com` — should load with a valid SSL certificate (padlock in browser)
-- Register or log in with email/password
-- Try **Continue with Google** — should open the Google OAuth flow and redirect back correctly
+Only after the origin cert is installed and the 443 config is deployed:
+
+- Cloudflare → **SSL/TLS → Overview** → **Full (strict)**
+
+---
+
+## 6. Google OAuth
+
+### If an OAuth client already exists (e.g. from local dev)
+- [console.cloud.google.com](https://console.cloud.google.com) → project → **APIs & Services → Credentials** → your OAuth 2.0 Client ID
+- **Authorized JavaScript origins** → add `https://app.yourdomain.com`
+- **Authorized redirect URIs** → add `https://app.yourdomain.com/api/auth/google/callback`
+- **Save**. Keep (or re-add) the localhost entries alongside if you still develop locally — a client can hold multiple URIs.
+- Client ID/secret are unchanged; nothing to reload server-side.
+
+### If starting from scratch
+- New project → **OAuth consent screen**: External, app name, your emails, authorized domain `yourdomain.com`
+- **Credentials → Create Credentials → OAuth client ID** → Web application → add the origin + redirect URI above → **Create**
+- Store the credentials in SSM and reload (step 4):
+
+```bash
+aws ssm put-parameter --overwrite --name /substrack/GOOGLE_CLIENT_ID     --value "<client id>"     --type String
+aws ssm put-parameter --overwrite --name /substrack/GOOGLE_CLIENT_SECRET --value "<client secret>" --type SecureString
+```
+
+Notes:
+- The console redirect URI must match SSM `GOOGLE_REDIRECT_URI` **exactly**
+  (`https://`, no trailing slash).
+- While the consent screen is in **Testing** status, only accounts listed
+  under **Test users** can sign in — add your own email.
+- Google can take a few minutes to propagate credential changes.
+
+---
+
+## 7. Verify + post-setup
+
+- `https://app.yourdomain.com` loads with a padlock (the browser sees
+  Cloudflare's edge cert; the Origin CA cert secures Cloudflare → origin)
+- Email/password login works (`COOKIE_SECURE=true` requires HTTPS — now satisfied)
+- **Continue with Google** completes and lands on the dashboard
+- **One-time:** Settings → **Reconnect** each already-linked bank. The webhook
+  URL only attaches to a Plaid item at Link time, so existing items need one
+  update-mode pass to register `PLAID_WEBHOOK_URL`.
+
+### Moving off the domain later
+Re-point DNS, update the five SSM values + the Google console entries, reload
+secrets, and reconnect banks once to re-register the webhook. (HSTS is
+deliberately not sent by nginx so a temporary domain isn't pinned to HTTPS
+after you repurpose it.)
 
 ---
 
 ## Troubleshooting
 
-**Google OAuth redirect mismatch error:**
-The redirect URI in Google Cloud Console must exactly match `GOOGLE_REDIRECT_URI` in `.env` — including `https://`, no trailing slash.
-
-**Mixed content warning (HTTPS page loading HTTP resources):**
-Make sure `FRONTEND_URL` and `CORS_ORIGINS` are set to `https://` not `http://`.
-
-**Cookie not being set after login:**
-Make sure `COOKIE_SECURE=true` in `.env` — cookies with `Secure` flag only work over HTTPS.
-
-**Cloudflare SSL error (526 Invalid SSL certificate):**
-Make sure SSL mode is set to **Full (strict)** not **Flexible** in Cloudflare SSL/TLS settings.
+| Symptom | Cause / fix |
+|---|---|
+| Cloudflare **521** | Can't reach origin :443 — security group not open, or frontend container down (`sudo docker-compose ps`) |
+| Cloudflare **526** | Origin cert invalid — wrong files in `/etc/ssl/substrack`, or hostnames don't cover the (sub)domain |
+| Redirect loop | Cloudflare SSL mode is "Flexible" — must be Full (strict) |
+| `redirect_uri_mismatch` | Google console URI ≠ SSM `GOOGLE_REDIRECT_URI` — compare character-for-character |
+| Google `access_denied` | Consent screen in Testing and your account isn't in Test users |
+| Cookie not set after login | `COOKIE_SECURE=true` requires HTTPS end-to-end — check you're on `https://` |
+| nginx container restart-looping | Cert files missing — nginx exits if `/etc/ssl/substrack/origin.{crt,key}` don't exist on the host |
+| Settings changes don't survive deploys | You edited `.env` by hand — put the value in SSM instead (step 4) |
