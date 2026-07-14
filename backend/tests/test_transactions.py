@@ -587,6 +587,28 @@ class TestSyncSubscriptions:
         subs = r.json()["subscriptions"]
         assert all(s["merchant"] != "Netflix" for s in subs)  # still hidden
 
+    async def test_sync_login_required_returns_409_and_marks_account(
+        self, auth_client, test_account, db
+    ):
+        """A broken bank connection is a 409 naming the bank, not a 500 —
+        and the account is flagged so Settings shows Reconnect."""
+        import json as _json
+
+        from plaid.exceptions import ApiException
+        exc = ApiException(status=400, reason="bad request")
+        exc.body = _json.dumps({"error_code": "ITEM_LOGIN_REQUIRED"})
+
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.side_effect = exc
+            r = await auth_client.post("/api/subscriptions/sync")
+
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert "Test Bank" in detail
+        assert "reconnect" in detail.lower()
+        await db.refresh(test_account)
+        assert test_account.status == "login_required"
+
     async def test_sync_requires_bank_account(self, auth_client):
         r = await auth_client.post("/api/subscriptions/sync")
         assert r.status_code == 400

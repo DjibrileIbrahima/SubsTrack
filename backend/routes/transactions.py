@@ -20,6 +20,7 @@ from services.subscription_sync import (
     upsert_detected_subscriptions,
 )
 from services.transaction_store import (
+    ItemReauthRequired,
     get_account_transactions,
     get_user_transactions,
     serialize_transaction,
@@ -153,6 +154,16 @@ async def sync_subscriptions(
                 db, current_user.id, detected, linked_account_id=account.id
             )
         return await _active_subscriptions_response(db, current_user.id)
+    except ItemReauthRequired as exc:
+        # Not a server error: the bank connection needs re-authentication.
+        # The account status was already set to login_required.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{exc} needs to be reconnected — open Settings, use the "
+                "Reconnect button next to the bank, then sync again."
+            ),
+        )
     except Exception:
         await db.rollback()
         logger.exception("Failed to sync subscriptions")

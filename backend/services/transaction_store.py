@@ -9,6 +9,7 @@ import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
+from plaid.exceptions import ApiException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,11 @@ from services import plaid_service
 from services.encryption import decrypt
 
 logger = logging.getLogger(__name__)
+
+
+class ItemReauthRequired(Exception):
+    """The linked account's bank connection broke (ITEM_LOGIN_REQUIRED) and
+    needs Link update-mode re-authentication. str(exc) is the institution name."""
 
 
 def _to_money(value) -> Decimal:
@@ -43,9 +49,18 @@ async def sync_account_transactions(db: AsyncSession, account: LinkedAccount) ->
     Commits, so the new cursor is only persisted together with the rows it
     represents. Returns the number of added/modified transactions.
     """
-    added, modified, removed, cursor = await plaid_service.sync_transactions(
-        decrypt(account.access_token), account.sync_cursor
-    )
+    try:
+        added, modified, removed, cursor = await plaid_service.sync_transactions(
+            decrypt(account.access_token), account.sync_cursor
+        )
+    except ApiException as exc:
+        if plaid_service.plaid_error_code(exc) == "ITEM_LOGIN_REQUIRED":
+            # Persist the broken state so Settings shows the Reconnect button
+            # even if the ITEM webhook never arrives.
+            account.status = "login_required"
+            await db.commit()
+            raise ItemReauthRequired(account.institution_name or "Your bank") from exc
+        raise
 
     changed = added + modified
     if changed:
@@ -78,6 +93,10 @@ async def sync_account_transactions(db: AsyncSession, account: LinkedAccount) ->
         )
 
     account.sync_cursor = cursor
+    # A successful sync proves the connection works — recover the status even
+    # if the LOGIN_REPAIRED webhook was never delivered.
+    if account.status != "active":
+        account.status = "active"
     await db.commit()
 
     logger.info(

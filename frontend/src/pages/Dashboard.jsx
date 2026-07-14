@@ -82,7 +82,8 @@ export default function Dashboard() {
       setSummary(refreshedSummary || [])
     } catch (e) {
       console.error('Sync failed:', e)
-      setError('Failed to sync subscriptions.')
+      // 409 = bank needs re-authentication; show the backend's instructions
+      setError(e.response?.data?.detail || 'Failed to sync subscriptions.')
     } finally {
       setSyncing(false)
     }

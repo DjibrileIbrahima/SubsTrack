@@ -7,6 +7,7 @@ should go through this module rather than calling the client directly.
 
 import asyncio
 import json
+import os
 
 from plaid.exceptions import ApiException
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
@@ -20,7 +21,8 @@ from plaid_client import PLAID_COUNTRY_CODES, PLAID_PRODUCTS, client
 _PAGE_SIZE = 500
 
 
-def _plaid_error_code(exc: ApiException) -> str:
+def plaid_error_code(exc: ApiException) -> str:
+    """Extract the error_code string from a Plaid ApiException body."""
     try:
         return json.loads(exc.body).get("error_code", "")
     except Exception:
@@ -57,7 +59,7 @@ def _sync_transactions_blocking(
         try:
             return _sync_transactions_once(access_token, cursor)
         except ApiException as exc:
-            code = _plaid_error_code(exc)
+            code = plaid_error_code(exc)
             if code == "PRODUCT_NOT_READY":
                 # Initial pull hasn't finished — a TRANSACTIONS webhook will
                 # announce data later. Not an error; report nothing changed.
@@ -94,6 +96,12 @@ async def create_link_token(user_id: str, access_token: str | None = None) -> st
             "language": "en",
             "user": LinkTokenCreateRequestUser(client_user_id=user_id),
         }
+        # Without this Plaid has nowhere to send ITEM/TRANSACTIONS webhooks and
+        # account statuses never update. In update mode it also (re)registers
+        # the webhook on the existing item.
+        webhook_url = os.getenv("PLAID_WEBHOOK_URL")
+        if webhook_url:
+            kwargs["webhook"] = webhook_url
         if access_token:
             kwargs["access_token"] = access_token
         else:
@@ -113,7 +121,7 @@ async def remove_item(access_token: str) -> None:
         try:
             client.item_remove(ItemRemoveRequest(access_token=access_token))
         except ApiException as exc:
-            if _plaid_error_code(exc) == "ITEM_NOT_FOUND":
+            if plaid_error_code(exc) == "ITEM_NOT_FOUND":
                 return
             raise
 

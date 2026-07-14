@@ -220,6 +220,21 @@ describe('Dashboard — sync', () => {
       expect(screen.getByText(/failed to sync/i)).toBeInTheDocument()
     })
   })
+
+  it('shows the backend detail when sync fails with instructions (409 reconnect)', async () => {
+    syncSubscriptions.mockRejectedValue({
+      response: { data: { detail: 'Test Bank needs to be reconnected — open Settings, use the Reconnect button next to the bank, then sync again.' } },
+    })
+    setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
+
+    render(<Dashboard />)
+    await waitFor(() => screen.getByRole('button', { name: /sync/i }))
+    await userEvent.click(screen.getByRole('button', { name: /sync/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/Test Bank needs to be reconnected/i)).toBeInTheDocument()
+    })
+  })
 })
 
 describe('Dashboard — annual estimate', () => {

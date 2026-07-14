@@ -163,6 +163,74 @@ class TestPlaidSyncWrapper:
                 await plaid_service.sync_transactions("tok", None)
 
 
+class TestItemLoginRequired:
+    def _login_required_exc(self):
+        from plaid.exceptions import ApiException
+        exc = ApiException(status=400, reason="bad request")
+        exc.body = json.dumps({"error_code": "ITEM_LOGIN_REQUIRED"})
+        return exc
+
+    async def test_marks_account_and_raises_domain_error(self, db, test_account):
+        import pytest
+
+        from services.transaction_store import ItemReauthRequired
+        with patch(SYNC_PATH, new_callable=AsyncMock) as mock_sync:
+            mock_sync.side_effect = self._login_required_exc()
+            with pytest.raises(ItemReauthRequired) as excinfo:
+                await sync_account_transactions(db, test_account)
+
+        assert test_account.status == "login_required"
+        assert "Test Bank" in str(excinfo.value)
+
+    async def test_successful_sync_restores_active_status(self, db, test_account):
+        """After the user reconnects, the next good sync self-heals the status
+        even if the LOGIN_REPAIRED webhook never arrives."""
+        test_account.status = "login_required"
+        with patch(SYNC_PATH, new_callable=AsyncMock) as mock_sync:
+            mock_sync.return_value = ([], [], [], "c1")
+            await sync_account_transactions(db, test_account)
+
+        assert test_account.status == "active"
+
+
+class TestLinkTokenWebhookRegistration:
+    def _link_response(self):
+        resp = MagicMock()
+        resp.__getitem__ = lambda self, k: "link-token" if k == "link_token" else None
+        return resp
+
+    async def test_webhook_url_included_when_configured(self):
+        import os
+        from unittest.mock import patch as env_patch
+
+        from services import plaid_service
+        with (
+            patch("services.plaid_service.client") as mock_client,
+            env_patch.dict(os.environ, {"PLAID_WEBHOOK_URL": "https://app.example.com/api/webhooks/plaid"}),
+        ):
+            mock_client.link_token_create.return_value = self._link_response()
+            await plaid_service.create_link_token("user-1")
+
+        request = mock_client.link_token_create.call_args[0][0]
+        assert request.to_dict()["webhook"] == "https://app.example.com/api/webhooks/plaid"
+
+    async def test_webhook_omitted_when_not_configured(self):
+        import os
+        from unittest.mock import patch as env_patch
+
+        from services import plaid_service
+        env = {k: v for k, v in os.environ.items() if k != "PLAID_WEBHOOK_URL"}
+        with (
+            patch("services.plaid_service.client") as mock_client,
+            env_patch.dict(os.environ, env, clear=True),
+        ):
+            mock_client.link_token_create.return_value = self._link_response()
+            await plaid_service.create_link_token("user-1")
+
+        request = mock_client.link_token_create.call_args[0][0]
+        assert "webhook" not in request.to_dict()
+
+
 class TestRemoveItem:
     """plaid_service.remove_item — revocation at Plaid on unlink."""
 
