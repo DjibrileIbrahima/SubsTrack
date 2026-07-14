@@ -712,6 +712,74 @@ class TestSubscriptionIdentity:
         assert {float(r.amount) for r in rows} == {9.99, 19.99}
 
 
+# ─── Display-label collisions (unique index is on the label) ────────────────
+
+def _detection(merchant, key, amount):
+    return {
+        "merchant": merchant,
+        "merchant_key": key,
+        "amount": amount,
+        "frequency": "monthly",
+        "category": "Software",
+        "last_charged": date.today() - timedelta(days=10),
+        "next_expected": date.today() + timedelta(days=20),
+        "occurrences": 3,
+    }
+
+
+class TestLabelCollisions:
+    async def test_ai_collapsed_labels_do_not_violate_unique_index(self, db, test_user):
+        """Regression: two price clusters whose labels the AI collapsed to the
+        same plain name blew up the sync with UniqueViolationError (prod,
+        2026-07-14, merchant 'tectra')."""
+        from services.subscription_sync import upsert_detected_subscriptions
+        db.add(Subscription(user_id=test_user.id, merchant="Tectra",
+                            merchant_key="tectra", amount=4.99,
+                            frequency="monthly", source="plaid"))
+        db.add(Subscription(user_id=test_user.id, merchant="Tectra ($9.99)",
+                            merchant_key="tectra", amount=9.99,
+                            frequency="monthly", source="plaid"))
+        await db.flush()
+
+        detected = [
+            _detection("Tectra", "tectra", 4.99),
+            _detection("Tectra", "tectra", 9.99),  # AI collapsed the suffix
+        ]
+        await upsert_detected_subscriptions(db, test_user.id, detected)
+
+        from sqlalchemy import select
+        rows = (await db.execute(
+            select(Subscription).where(Subscription.merchant_key == "tectra")
+        )).scalars().all()
+        assert len(rows) == 2
+        labels = {r.merchant.lower() for r in rows}
+        assert len(labels) == 2  # labels stayed distinct
+        assert {float(r.amount) for r in rows} == {4.99, 9.99}
+
+    async def test_insert_gets_suffixed_label_when_plain_is_taken(self, db, test_user):
+        """A new detection whose label is held by an unmatchable row is inserted
+        under an amount-suffixed label instead of crashing."""
+        from services.subscription_sync import upsert_detected_subscriptions
+        db.add(Subscription(user_id=test_user.id, merchant="Tectra",
+                            merchant_key="tectra", amount=4.99,
+                            frequency="monthly", source="plaid"))
+        await db.flush()
+
+        detected = [
+            _detection("Tectra", "tectra", 4.99),    # claims the existing row
+            _detection("Tectra", "tectra", 50.00),   # beyond tolerance → insert
+        ]
+        await upsert_detected_subscriptions(db, test_user.id, detected)
+
+        from sqlalchemy import select
+        rows = (await db.execute(
+            select(Subscription).where(Subscription.merchant_key == "tectra")
+        )).scalars().all()
+        assert len(rows) == 2
+        inserted = next(r for r in rows if float(r.amount) == 50.00)
+        assert inserted.merchant == "Tectra ($50.00)"
+
+
 # ─── GET /api/summary ────────────────────────────────────────────────────────
 
 class TestGetSummary:

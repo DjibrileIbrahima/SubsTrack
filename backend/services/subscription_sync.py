@@ -84,6 +84,32 @@ async def _find_existing(
     return next((r for r in rows if r.merchant.lower() == label), None)
 
 
+async def _label_taken(db: AsyncSession, user_id, label: str, exclude_id=None) -> bool:
+    """Is this display label already used by a DIFFERENT subscription row?
+    (The unique index is on lower(merchant), while identity is merchant_key —
+    multiple rows can share a key, so label writes must be collision-checked.)"""
+    result = await db.execute(
+        select(Subscription.id).where(
+            Subscription.user_id == user_id,
+            func.lower(Subscription.merchant) == label.lower(),
+        )
+    )
+    return any(row_id != exclude_id for row_id in result.scalars().all())
+
+
+async def _resolve_label(db: AsyncSession, user_id, sub: dict, exclude_id=None) -> str | None:
+    """Pick a collision-free display label for a detection: the detected label,
+    else an amount-suffixed variant, else None (caller keeps the old label or
+    skips the insert)."""
+    label = sub["merchant"]
+    if not await _label_taken(db, user_id, label, exclude_id):
+        return label
+    suffixed = f"{label} (${to_money(sub['amount'])})"
+    if not await _label_taken(db, user_id, suffixed, exclude_id):
+        return suffixed
+    return None
+
+
 async def upsert_detected_subscriptions(
     db: AsyncSession, user_id, detected: list[dict], linked_account_id=None
 ) -> None:
@@ -100,11 +126,18 @@ async def upsert_detected_subscriptions(
     for sub in detected:
         existing = await _find_existing(db, user_id, sub, matched_ids)
         if existing is None:
+            label = await _resolve_label(db, user_id, sub)
+            if label is None:
+                logger.warning(
+                    "No collision-free label for detected subscription %r (user %s) — skipping",
+                    sub["merchant"], user_id,
+                )
+                continue
             try:
                 new_row = Subscription(
                     user_id=user_id,
                     linked_account_id=linked_account_id,
-                    merchant=sub["merchant"],
+                    merchant=label,
                     merchant_key=_merchant_key(sub),
                     amount=to_money(sub["amount"]),
                     frequency=sub["frequency"],
@@ -130,7 +163,9 @@ async def upsert_detected_subscriptions(
             continue  # user deactivated it — don't resurrect
         if existing.linked_account_id is None and linked_account_id is not None:
             existing.linked_account_id = linked_account_id  # backfill legacy rows
-        existing.merchant = sub["merchant"]
+        new_label = await _resolve_label(db, user_id, sub, exclude_id=existing.id)
+        if new_label is not None:
+            existing.merchant = new_label
         existing.merchant_key = _merchant_key(sub)
         existing.amount = to_money(sub["amount"])
         existing.frequency = sub["frequency"]

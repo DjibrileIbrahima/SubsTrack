@@ -136,6 +136,33 @@ class TestMergeCandidateAndAi:
         assert result["merchant"] == "Spotify"
         assert result["detection_method"] == "hybrid"
 
+    def test_ai_rename_keeps_cluster_amount_suffix(self):
+        """AI normalization must not collapse sibling price-cluster labels onto
+        one plain name — that collides on the unique (user, merchant) index."""
+        candidate = self._candidate(merchant="Spotify ($9.99)", amount=9.99)
+        candidate["merchant_key"] = "spotify"
+        ai = {
+            "is_subscription": True,
+            "normalized_merchant": "Spotify",
+            "category": "Music", "frequency": "monthly",
+            "confidence": 0.90, "reason": "",
+        }
+        result = merge_candidate_and_ai(candidate, ai)
+        assert result["merchant"] == "Spotify ($9.99)"
+        assert result["merchant_key"] == "spotify"
+
+    def test_ai_rename_plain_label_stays_plain(self):
+        candidate = self._candidate(merchant="Spotify", amount=9.99)
+        candidate["merchant_key"] = "spotify"
+        ai = {
+            "is_subscription": True,
+            "normalized_merchant": "Spotify Premium",
+            "category": "Music", "frequency": "monthly",
+            "confidence": 0.90, "reason": "",
+        }
+        result = merge_candidate_and_ai(candidate, ai)
+        assert result["merchant"] == "Spotify Premium"
+
     def test_confidence_takes_max(self):
         candidate = self._candidate(confidence=0.60)
         ai = {"is_subscription": True, "confidence": 0.85, "frequency": "monthly",

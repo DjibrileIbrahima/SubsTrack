@@ -8,10 +8,18 @@ def merge_candidate_and_ai(candidate: dict, ai_result: dict) -> dict | None:
 
     confidence = max(candidate.get("confidence", 0), ai_result.get("confidence", 0))
 
+    label = ai_result.get("normalized_merchant") or candidate["merchant"]
+    key = candidate.get("merchant_key")
+    if key and candidate["merchant"].lower() != key:
+        # The candidate is one price cluster of a multi-plan merchant
+        # ("Tectra ($9.99)"). The AI normalizes away the amount suffix, but
+        # sibling clusters need distinct labels — reapply it to the AI name.
+        label = f"{label} (${candidate['amount']:.2f})"
+
     return {
-        "merchant": ai_result.get("normalized_merchant") or candidate["merchant"],
+        "merchant": label,
         # Identity stays the rules-normalized key even when the AI renames the label
-        "merchant_key": candidate.get("merchant_key"),
+        "merchant_key": key,
         "amount": candidate["amount"],
         "frequency": ai_result.get("frequency") if ai_result.get("frequency") != "unknown" else candidate["frequency"],
         "last_charged": candidate["last_charged"],
