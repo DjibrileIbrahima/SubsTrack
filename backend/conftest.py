@@ -21,6 +21,9 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("PLAID_CLIENT_ID", "test-client-id")
 os.environ.setdefault("PLAID_SECRET", "test-secret")
 os.environ["COOKIE_SECURE"] = "false"
+# Webhooks fail-closed by default in production; the test suite posts unsigned
+# payloads, so allow unverified webhooks here (mirrors local dev).
+os.environ.setdefault("PLAID_ALLOW_UNVERIFIED_WEBHOOKS", "true")
 
 # ─── Bypass rate limiting for all tests ──────────────────────────────────────
 # The @limiter.limit() decorator calls _check_request_limit at request time,
@@ -183,4 +186,12 @@ def mock_send_email():
     """Prevent real email sends in all tests."""
     with patch("services.alert_service.send_alert_email", new_callable=AsyncMock) as m:
         m.return_value = True
+        yield m
+
+
+@pytest.fixture(autouse=True)
+def mock_enqueue_item_sync():
+    """Stub the arq enqueue so webhook tests never open a real Redis connection.
+    Tests that assert on enqueue behaviour receive this mock."""
+    with patch("routes.webhooks.enqueue_item_sync", new_callable=AsyncMock) as m:
         yield m

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 VERIFY_PATH = "routes.webhooks.verify_plaid_webhook"
-PLAID_ENV_PATH = "routes.webhooks.PLAID_ENV"
+ALLOW_UNVERIFIED_PATH = "routes.webhooks._ALLOW_UNVERIFIED_WEBHOOKS"
 
 
 class TestWebhookBasics:
@@ -177,7 +177,7 @@ class TestItemWebhook:
 
 
 class TestWebhookSyncTrigger:
-    """Verify that transaction update events enqueue a background sync."""
+    """Verify that transaction update events enqueue a durable arq sync job."""
 
     @pytest.mark.parametrize("code", [
         "SYNC_UPDATES_AVAILABLE",
@@ -187,44 +187,42 @@ class TestWebhookSyncTrigger:
         # /transactions/sync also delivers removals, so this triggers a sync too
         "TRANSACTIONS_REMOVED",
     ])
-    async def test_sync_enqueued_for_update_codes(self, client, code):
-        with patch(
-            "routes.webhooks.sync_subscriptions_for_item",
-            new_callable=AsyncMock,
-        ) as mock_sync:
-            res = await client.post("/api/webhooks/plaid", json={
-                "webhook_type": "TRANSACTIONS",
-                "webhook_code": code,
-                "item_id": "item-sandbox-abc",
-            })
+    async def test_sync_enqueued_for_update_codes(self, client, mock_enqueue_item_sync, code):
+        res = await client.post("/api/webhooks/plaid", json={
+            "webhook_type": "TRANSACTIONS",
+            "webhook_code": code,
+            "item_id": "item-sandbox-abc",
+        })
         assert res.status_code == 200
-        mock_sync.assert_awaited_once_with("item-sandbox-abc")
+        mock_enqueue_item_sync.assert_awaited_once_with("item-sandbox-abc")
 
-    async def test_sync_not_enqueued_when_item_id_missing(self, client):
-        with patch(
-            "routes.webhooks.sync_subscriptions_for_item",
-            new_callable=AsyncMock,
-        ) as mock_sync:
-            res = await client.post("/api/webhooks/plaid", json={
-                "webhook_type": "TRANSACTIONS",
-                "webhook_code": "DEFAULT_UPDATE",
-            })
+    async def test_sync_not_enqueued_when_item_id_missing(self, client, mock_enqueue_item_sync):
+        res = await client.post("/api/webhooks/plaid", json={
+            "webhook_type": "TRANSACTIONS",
+            "webhook_code": "DEFAULT_UPDATE",
+        })
         assert res.status_code == 200
-        mock_sync.assert_not_awaited()
+        mock_enqueue_item_sync.assert_not_awaited()
 
-    async def test_sync_not_enqueued_for_item_webhooks(self, client):
-        with patch(
-            "routes.webhooks.sync_subscriptions_for_item",
-            new_callable=AsyncMock,
-        ) as mock_sync:
-            res = await client.post("/api/webhooks/plaid", json={
-                "webhook_type": "ITEM",
-                "webhook_code": "ERROR",
-                "item_id": "item-sandbox-abc",
-                "error": {"error_code": "ITEM_LOGIN_REQUIRED"},
-            })
+    async def test_sync_not_enqueued_for_item_webhooks(self, client, mock_enqueue_item_sync):
+        res = await client.post("/api/webhooks/plaid", json={
+            "webhook_type": "ITEM",
+            "webhook_code": "ERROR",
+            "item_id": "item-sandbox-abc",
+            "error": {"error_code": "ITEM_LOGIN_REQUIRED"},
+        })
         assert res.status_code == 200
-        mock_sync.assert_not_awaited()
+        mock_enqueue_item_sync.assert_not_awaited()
+
+    async def test_enqueue_failure_returns_503_for_plaid_retry(self, client, mock_enqueue_item_sync):
+        # A failed enqueue must not be acked as success — Plaid redelivers on non-2xx.
+        mock_enqueue_item_sync.side_effect = RuntimeError("redis down")
+        res = await client.post("/api/webhooks/plaid", json={
+            "webhook_type": "TRANSACTIONS",
+            "webhook_code": "DEFAULT_UPDATE",
+            "item_id": "item-sandbox-abc",
+        })
+        assert res.status_code == 503
 
 
 class TestItemStatusPersistence:
@@ -308,16 +306,17 @@ class TestWebhookSignatureVerification:
         assert res.status_code == 400
         assert "signature" in res.json()["detail"].lower()
 
-    async def test_missing_header_in_sandbox_allowed(self, client):
-        with patch(PLAID_ENV_PATH, "sandbox"):
+    async def test_missing_header_allowed_when_flag_set(self, client):
+        # PLAID_ALLOW_UNVERIFIED_WEBHOOKS=true in the test env (see conftest).
+        with patch(ALLOW_UNVERIFIED_PATH, True):
             res = await client.post(
                 "/api/webhooks/plaid",
                 json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE", "item_id": "item-abc"},
             )
         assert res.status_code == 200
 
-    async def test_missing_header_in_production_returns_401(self, client):
-        with patch(PLAID_ENV_PATH, "production"):
+    async def test_missing_header_rejected_when_fail_closed(self, client):
+        with patch(ALLOW_UNVERIFIED_PATH, False):
             res = await client.post(
                 "/api/webhooks/plaid",
                 json={"webhook_type": "TRANSACTIONS", "webhook_code": "DEFAULT_UPDATE", "item_id": "item-abc"},

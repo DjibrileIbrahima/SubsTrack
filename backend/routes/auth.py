@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import os
@@ -33,6 +34,26 @@ def _utcnow() -> datetime:
 def _hash_reset_token(token: str) -> str:
     """Reset tokens are stored hashed so a DB leak can't be used for account takeover."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+# bcrypt is ~100-300ms of pure CPU per call; running it inline would block the
+# event loop for every concurrent request. Dispatch to a thread like the Plaid SDK.
+# A precomputed dummy hash keeps unknown-email logins as slow as real ones, closing
+# the user-enumeration timing oracle.
+_DUMMY_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt())
+
+
+async def _hash_password(password: str) -> str:
+    hashed = await asyncio.to_thread(bcrypt.hashpw, password.encode(), bcrypt.gensalt())
+    return hashed.decode()
+
+
+async def _verify_password(password: str, hashed: str | None) -> bool:
+    """Constant-time-ish password check. Always runs bcrypt (against a dummy hash
+    when the user or password is absent) so timing doesn't reveal account existence."""
+    target = hashed.encode() if hashed else _DUMMY_HASH
+    ok = await asyncio.to_thread(bcrypt.checkpw, password.encode(), target)
+    return bool(ok) and hashed is not None
 
 
 def _normalize_email(email: str) -> str:
@@ -98,7 +119,7 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
         raise HTTPException(status_code=400, detail="Email already registered")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
+    hashed = await _hash_password(body.password)
     user = User(email=_normalize_email(body.email), hashed_password=hashed)
     db.add(user)
     try:
@@ -122,7 +143,7 @@ class LoginRequest(BaseModel):
 @limiter.limit("10/minute")
 async def login(request: Request, response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = await _get_user_by_email(db, body.email)
-    if not user or not user.hashed_password or not bcrypt.checkpw(body.password.encode(), user.hashed_password.encode()):
+    if not await _verify_password(body.password, user.hashed_password if user else None):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.mfa_enabled and user.mfa_secret:
@@ -371,7 +392,7 @@ async def reset_password(
         raise HTTPException(status_code=400, detail="Invalid or expired reset link")
     user_result = await db.execute(select(User).where(User.id == reset.user_id))
     user = user_result.scalar_one()
-    user.hashed_password = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
+    user.hashed_password = await _hash_password(body.password)
     reset.used = True
     await db.commit()
     # People reset passwords because they suspect compromise — kill every

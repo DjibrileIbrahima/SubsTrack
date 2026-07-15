@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from plaid.exceptions import ApiException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import LinkedAccount, Transaction
@@ -48,7 +48,23 @@ async def sync_account_transactions(db: AsyncSession, account: LinkedAccount) ->
 
     Commits, so the new cursor is only persisted together with the rows it
     represents. Returns the number of added/modified transactions.
+
+    A transaction-scoped advisory lock serializes syncs per linked account across
+    all processes (API + worker), so a manual sync racing a webhook sync can't
+    both pull the same cursor and collide on the plaid_transaction_id unique index.
+    The lock releases automatically on commit/rollback.
     """
+    if db.bind.dialect.name == "postgresql":
+        got_lock = (
+            await db.execute(
+                text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"plaid_sync:{account.id}"},
+            )
+        ).scalar()
+        if not got_lock:
+            logger.info("Sync already in progress for account %s — skipping", account.id)
+            return 0
+
     try:
         added, modified, removed, cursor = await plaid_service.sync_transactions(
             decrypt(account.access_token), account.sync_cursor

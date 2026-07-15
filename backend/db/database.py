@@ -11,7 +11,21 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://substrack:substrack_password@localhost:5432/substrack"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=os.getenv("SQL_ECHO", "false").lower() == "true")
+_engine_kwargs: dict = {"echo": os.getenv("SQL_ECHO", "false").lower() == "true"}
+if DATABASE_URL.startswith("postgresql"):
+    # Pool tuning applies only to Postgres; SQLite (tests) keeps its default pool.
+    # pre_ping transparently replaces connections dropped by an RDS failover/idle
+    # timeout; statement_timeout caps runaway queries so they can't hold the pool.
+    _engine_kwargs.update(
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10")),  # fail fast vs. 30s default
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        connect_args={"server_settings": {"statement_timeout": os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000")}},
+    )
+
+engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
