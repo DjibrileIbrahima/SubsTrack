@@ -72,6 +72,61 @@ class TestSyncAccountTransactions:
         rows = (await db.execute(select(Transaction))).scalars().all()
         assert [r.plaid_transaction_id for r in rows] == ["txn-2"]
 
+    async def test_resync_same_added_txn_is_idempotent(self, db, test_account):
+        """Re-delivering the same 'added' transaction must not duplicate or error
+        (the row already exists, so it takes the update path)."""
+        added = [_plaid_txn("txn-1", amount=15.99)]
+        with patch(SYNC_PATH, new_callable=AsyncMock) as mock_sync:
+            mock_sync.return_value = (added, [], [], "c1")
+            await sync_account_transactions(db, test_account)
+            mock_sync.return_value = ([_plaid_txn("txn-1", amount=16.99)], [], [], "c2")
+            await sync_account_transactions(db, test_account)
+
+        rows = (await db.execute(select(Transaction))).scalars().all()
+        assert len(rows) == 1
+        assert float(rows[0].amount) == 16.99
+
+    async def test_duplicate_insert_degrades_to_update(self, db, test_account):
+        """If the same transaction id is already in the table but not seen by the
+        upfront read (a concurrent insert), the SAVEPOINT path updates it instead
+        of failing the sync."""
+        from services import transaction_store
+
+        added = [_plaid_txn("txn-dup", amount=12.00)]
+        real_execute = db.execute
+        call = {"n": 0}
+
+        async def execute_hiding_first_read(statement, *args, **kwargs):
+            # Insert the conflicting row right before the sync's first SELECT,
+            # but make that SELECT return nothing so the code takes the insert path.
+            text = str(statement).lower()
+            if call["n"] == 0 and text.startswith("select") and "plaid_transaction_id" in text:
+                call["n"] += 1
+                db.add(Transaction(
+                    plaid_transaction_id="txn-dup",
+                    linked_account_id=test_account.id,
+                    user_id=test_account.user_id,
+                    amount=1, date=date.today(),
+                ))
+                await db.flush()
+                empty = MagicMock()
+                empty.scalars.return_value = []
+                return empty
+            return await real_execute(statement, *args, **kwargs)
+
+        with (
+            patch(SYNC_PATH, new_callable=AsyncMock) as mock_sync,
+            patch.object(db, "execute", side_effect=execute_hiding_first_read),
+        ):
+            mock_sync.return_value = (added, [], [], "c1")
+            count = await sync_account_transactions(db, test_account)
+
+        assert count == 1
+        rows = (await db.execute(select(Transaction).where(
+            Transaction.plaid_transaction_id == "txn-dup"))).scalars().all()
+        assert len(rows) == 1
+        assert float(rows[0].amount) == 12.00  # updated to the synced value
+
     async def test_category_falls_back_to_personal_finance_category(self, db, test_account):
         txn = _plaid_txn("txn-1", category=None,
                          personal_finance_category={"primary": "GENERAL_SERVICES"})
