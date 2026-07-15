@@ -70,6 +70,9 @@ export const unlinkAccount = (id) =>
 export const updateMe = (data) =>
   api.patch('/auth/me', data).then(r => r.data)
 
+export const deleteAccount = (password, code) =>
+  api.post('/auth/delete-account', { password, code }).then(r => r.data)
+
 export const requestPasswordReset = (email) =>
   api.post('/auth/forgot-password', { email }).then(r => r.data)
 

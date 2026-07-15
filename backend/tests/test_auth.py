@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy import select
 
-from db.models import LinkedAccount, PasswordResetToken, Subscription, User
+from db.models import Alert, LinkedAccount, PasswordResetToken, Subscription, User
 from routes.auth import _hash_reset_token
 from services.encryption import decrypt
 from services.encryption import encrypt as _encrypt
@@ -1051,3 +1051,119 @@ class TestRefreshToken:
         client.cookies.set("access_token", self._refresh_token(test_user.id))
         r = await client.get("/api/auth/me")
         assert r.status_code == 401
+
+
+# ─── POST /api/auth/delete-account ───────────────────────────────────────────
+
+class TestDeleteAccount:
+    @pytest.fixture(autouse=True)
+    def mock_item_remove(self):
+        """Deletion revokes items at Plaid — never call the real API in tests."""
+        with patch("routes.auth.plaid_service.remove_item", new_callable=AsyncMock) as m:
+            yield m
+
+    async def test_unauthenticated_returns_401(self, client):
+        r = await client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 401
+
+    async def test_wrong_password_returns_403(self, auth_client):
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "wrongpass"})
+        assert r.status_code == 403
+
+    async def test_missing_password_for_password_user_returns_403(self, auth_client):
+        r = await auth_client.post("/api/auth/delete-account", json={})
+        assert r.status_code == 403
+
+    async def test_success_deletes_user_and_all_data(
+        self, auth_client, db, test_user, test_account, test_subscription
+    ):
+        alert = Alert(
+            user_id=test_user.id, subscription_id=test_subscription.id,
+            message="Netflix renews", due_date=None,
+        )
+        db.add(alert)
+        await db.flush()
+
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 200
+        assert "deleted" in r.json()["message"].lower()
+
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is None
+        assert (await db.execute(
+            select(LinkedAccount).where(LinkedAccount.user_id == test_user.id)
+        )).scalars().all() == []
+        assert (await db.execute(
+            select(Subscription).where(Subscription.user_id == test_user.id)
+        )).scalars().all() == []
+        assert (await db.execute(
+            select(Alert).where(Alert.user_id == test_user.id)
+        )).scalars().all() == []
+
+    async def test_revokes_plaid_items(self, auth_client, test_account, mock_item_remove):
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 200
+        mock_item_remove.assert_awaited_once_with("access-sandbox-fake-token")
+
+    async def test_plaid_failure_returns_502_and_keeps_user(
+        self, auth_client, db, test_user, test_account, mock_item_remove
+    ):
+        mock_item_remove.side_effect = Exception("Plaid is down")
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 502
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is not None
+
+    async def test_oauth_user_deletes_without_password(self, client, db):
+        from services.jwt import create_access_token
+        oauth_user = User(email="oauthdel@example.com", hashed_password=None)
+        db.add(oauth_user)
+        await db.flush()
+        await db.refresh(oauth_user)
+
+        client.cookies.set("access_token", create_access_token(str(oauth_user.id)))
+        r = await client.post("/api/auth/delete-account", json={})
+        assert r.status_code == 200
+        assert (await db.execute(
+            select(User).where(User.id == oauth_user.id)
+        )).scalar_one_or_none() is None
+
+    async def test_me_reports_has_password(self, auth_client):
+        r = await auth_client.get("/api/auth/me")
+        assert r.status_code == 200
+        assert r.json()["has_password"] is True
+
+    async def _enable_mfa(self, db, user, secret="JBSWY3DPEHPK3PXP"):
+        user.mfa_enabled = True
+        user.mfa_secret = _encrypt(secret)
+        await db.flush()
+
+    async def test_mfa_user_missing_code_returns_403(self, auth_client, db, test_user):
+        await self._enable_mfa(db, test_user)
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 403
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is not None
+
+    async def test_mfa_user_wrong_code_returns_403(self, auth_client, db, test_user):
+        await self._enable_mfa(db, test_user)
+        r = await auth_client.post(
+            "/api/auth/delete-account", json={"password": "password123", "code": "000000"}
+        )
+        assert r.status_code == 403
+
+    async def test_mfa_user_valid_code_deletes(self, auth_client, db, test_user):
+        import pyotp
+        secret = "JBSWY3DPEHPK3PXP"
+        await self._enable_mfa(db, test_user, secret)
+        code = pyotp.TOTP(secret).now()
+        r = await auth_client.post(
+            "/api/auth/delete-account", json={"password": "password123", "code": code}
+        )
+        assert r.status_code == 200
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is None

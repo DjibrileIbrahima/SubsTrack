@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import QRCode from 'react-qr-code'
 import { useAuth } from '../context/AuthContext'
 import { usePlaid } from '../hooks/usePlaid'
-import { updateMe, getAccounts, unlinkAccount, setupMfa, enableMfa, disableMfa } from '../api'
+import { updateMe, getAccounts, unlinkAccount, setupMfa, enableMfa, disableMfa, deleteAccount } from '../api'
 
 const ACCOUNT_STATUS_LABELS = {
   login_required: 'Reconnect required',
@@ -31,6 +31,13 @@ export default function Settings({ onNavigate }) {
   const [mfaLoading, setMfaLoading] = useState(false)
   const [mfaError, setMfaError] = useState('')
   const [mfaEnabled, setMfaEnabled] = useState(user?.mfa_enabled ?? false)
+
+  // Delete-account state
+  const [deleteStep, setDeleteStep] = useState('idle') // 'idle' | 'confirm'
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteCode, setDeleteCode] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   useEffect(() => {
     getAccounts().then(setAccounts).catch(() => {})
@@ -117,6 +124,30 @@ export default function Settings({ onNavigate }) {
       setError('Failed to save settings.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleDeleteAccount = async () => {
+    if (user?.has_password && !deletePassword) {
+      setDeleteError('Enter your password to confirm.')
+      return
+    }
+    if (user?.mfa_enabled && deleteCode.length !== 6) {
+      setDeleteError('Enter your 6-digit authenticator code.')
+      return
+    }
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await deleteAccount(
+        user?.has_password ? deletePassword : undefined,
+        user?.mfa_enabled ? deleteCode : undefined,
+      )
+      // Cookies are cleared server-side; drop the user so the app returns to auth.
+      updateUser(null)
+    } catch (e) {
+      setDeleteError(e.response?.data?.detail || 'Failed to delete account.')
+      setDeleting(false)
     }
   }
 
@@ -330,6 +361,80 @@ export default function Settings({ onNavigate }) {
         >
           {saving ? 'Saving…' : 'Save changes'}
         </button>
+      </div>
+
+      {/* Danger zone */}
+      <div className="settings-card" style={{ borderColor: 'var(--danger)' }}>
+        <p className="settings-card-title">Delete account</p>
+
+        {deleteStep === 'idle' && (
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <span className="settings-hint">
+                Permanently delete your account, disconnect your banks, and erase all
+                subscription data. This can't be undone.
+              </span>
+            </div>
+            <button
+              className="unlink-btn"
+              onClick={() => { setDeleteStep('confirm'); setDeletePassword(''); setDeleteCode(''); setDeleteError('') }}
+            >
+              Delete account
+            </button>
+          </div>
+        )}
+
+        {deleteStep === 'confirm' && (
+          <div>
+            <p className="settings-hint" style={{ marginBottom: 12 }}>
+              This permanently deletes your account and disconnects your banks.
+              This action cannot be undone.
+            </p>
+            {user?.has_password && (
+              <input
+                className="form-input"
+                type="password"
+                placeholder="Enter your password to confirm"
+                value={deletePassword}
+                onChange={e => setDeletePassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleDeleteAccount()}
+                style={{ marginBottom: 12 }}
+                autoFocus
+              />
+            )}
+            {user?.mfa_enabled && (
+              <input
+                className="form-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="6-digit authenticator code"
+                maxLength={6}
+                value={deleteCode}
+                onChange={e => setDeleteCode(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={e => e.key === 'Enter' && handleDeleteAccount()}
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            {deleteError && <p className="form-error" style={{ marginBottom: 8 }}>{deleteError}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn-primary"
+                style={{ fontSize: 13, padding: '6px 16px', background: 'var(--danger)' }}
+                onClick={handleDeleteAccount}
+                disabled={deleting}
+              >
+                {deleting ? 'Deleting…' : 'Permanently delete'}
+              </button>
+              <button
+                className="btn-ghost"
+                style={{ fontSize: 13, padding: '6px 16px' }}
+                onClick={() => { setDeleteStep('idle'); setDeleteError('') }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   )
