@@ -3,7 +3,22 @@
 import pytest
 from cryptography.fernet import InvalidToken
 
+import services.encryption as enc
 from services.encryption import decrypt, encrypt
+
+_FAKE_KMS_ARN = "arn:aws:kms:us-east-1:123456789012:key/fake"
+
+
+class _FakeKMS:
+    """Stand-in for boto3's KMS client — no network, deterministic blobs."""
+    _MARKER = b"FAKEKMS::"
+
+    def encrypt(self, KeyId, Plaintext):
+        return {"CiphertextBlob": self._MARKER + Plaintext}
+
+    def decrypt(self, CiphertextBlob, KeyId=None):
+        assert CiphertextBlob.startswith(self._MARKER)
+        return {"Plaintext": CiphertextBlob[len(self._MARKER):]}
 
 
 class TestEncryption:
@@ -41,3 +56,50 @@ class TestEncryption:
         garbled = valid[:-10] + "XXXXXXXXXX"
         with pytest.raises((InvalidToken, Exception)):
             decrypt(garbled)
+
+
+class TestKmsScheme:
+    def _enable_kms(self, monkeypatch):
+        monkeypatch.setattr(enc, "_KMS_KEY_ID", _FAKE_KMS_ARN)
+        monkeypatch.setattr(enc, "_kms_client", lambda: _FakeKMS())
+
+    def test_kms_encrypt_is_tagged_and_roundtrips(self, monkeypatch):
+        self._enable_kms(monkeypatch)
+        ciphertext = enc.encrypt("access-sandbox-xyz")
+        assert ciphertext.startswith("kms:v1:")
+        assert "access-sandbox-xyz" not in ciphertext
+        assert enc.decrypt(ciphertext) == "access-sandbox-xyz"
+
+    def test_legacy_fernet_still_decrypts_after_kms_enabled(self, monkeypatch):
+        # A row written under the old Fernet scheme (KMS off)...
+        legacy = enc.encrypt("old-token")
+        assert not legacy.startswith("kms:v1:")
+        # ...must still decrypt once KMS becomes the active scheme.
+        self._enable_kms(monkeypatch)
+        assert enc.decrypt(legacy) == "old-token"
+
+    def test_reencrypt_migrates_legacy_row_to_kms(self, monkeypatch):
+        legacy = enc.encrypt("migrate-me")
+        self._enable_kms(monkeypatch)
+        migrated = enc.reencrypt(legacy)
+        assert migrated.startswith("kms:v1:")
+        assert enc.decrypt(migrated) == "migrate-me"
+
+
+class TestFernetRotation:
+    def test_value_from_old_key_decrypts_after_new_key_prepended(self, monkeypatch):
+        from cryptography.fernet import Fernet, MultiFernet
+
+        old = Fernet(Fernet.generate_key())
+        new = Fernet(Fernet.generate_key())
+        token = old.encrypt(b"rotate-me").decode()
+
+        # Active MultiFernet: new key first (used for new writes), old key still
+        # available for reads.
+        monkeypatch.setattr(enc, "_fernet", MultiFernet([new, old]))
+        assert enc.decrypt(token) == "rotate-me"
+
+        # New writes use the new key — the old key alone can't read them.
+        fresh = enc.encrypt("fresh")
+        with pytest.raises(InvalidToken):
+            old.decrypt(fresh.encode())
