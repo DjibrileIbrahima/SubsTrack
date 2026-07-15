@@ -90,8 +90,6 @@ class TestSyncAccountTransactions:
         """If the same transaction id is already in the table but not seen by the
         upfront read (a concurrent insert), the SAVEPOINT path updates it instead
         of failing the sync."""
-        from services import transaction_store
-
         added = [_plaid_txn("txn-dup", amount=12.00)]
         real_execute = db.execute
         call = {"n": 0}
