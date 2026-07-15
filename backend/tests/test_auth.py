@@ -891,3 +891,106 @@ class TestResetPassword:
         )
         assert r.status_code == 400
         assert "8 characters" in r.json()["detail"]
+
+
+# ─── POST /api/auth/refresh (rotating refresh tokens) ────────────────────────
+
+class TestRefreshToken:
+    def _refresh_token(self, user_id, fid="fam-1", jti="jti-1"):
+        from services.jwt import create_refresh_token
+        return create_refresh_token(str(user_id), fid, jti)
+
+    async def test_login_sets_refresh_cookie_and_registers_family(
+        self, client, test_user, mock_redis_dep
+    ):
+        r = await client.post(
+            "/api/auth/login", json={"email": test_user.email, "password": "password123"}
+        )
+        assert r.status_code == 200
+        assert "refresh_token" in r.cookies
+        family_keys = [
+            c.args[0] for c in mock_redis_dep.setex.call_args_list
+            if c.args[0].startswith("refresh_family:")
+        ]
+        assert len(family_keys) == 1
+
+    async def test_refresh_rotates_tokens(self, client, test_user, mock_redis_dep):
+        fid, jti = "fam-abc", "jti-abc"
+        token = self._refresh_token(test_user.id, fid, jti)
+
+        def _get(key):
+            return jti if key == f"refresh_family:{fid}" else None
+        mock_redis_dep.get.side_effect = _get
+
+        client.cookies.set("refresh_token", token)
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 200
+        assert r.json()["refreshed"] is True
+        assert "access_token" in r.cookies
+        assert "refresh_token" in r.cookies
+        # The family must have been rotated to a NEW jti (single-use).
+        rotated = [
+            c for c in mock_redis_dep.setex.call_args_list
+            if c.args[0] == f"refresh_family:{fid}"
+        ]
+        assert rotated and rotated[-1].args[2] != jti
+
+    async def test_refresh_without_cookie_returns_401(self, client):
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 401
+
+    async def test_refresh_reuse_detected_revokes_sessions(
+        self, client, test_user, mock_redis_dep
+    ):
+        fid = "fam-reuse"
+        token = self._refresh_token(test_user.id, fid, "old-jti")
+
+        def _get(key):
+            # Family's current jti differs → a superseded token was replayed.
+            return "current-jti" if key == f"refresh_family:{fid}" else None
+        mock_redis_dep.get.side_effect = _get
+
+        client.cookies.set("refresh_token", token)
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 401
+        assert "reuse" in r.json()["detail"].lower()
+        revoked = [
+            c.args[0] for c in mock_redis_dep.setex.call_args_list
+            if c.args[0].startswith("token_min_iat:")
+        ]
+        assert revoked == [f"token_min_iat:{test_user.id}"]
+
+    async def test_refresh_family_expired_returns_401(self, client, test_user, mock_redis_dep):
+        token = self._refresh_token(test_user.id, "fam-gone", "jti")
+        mock_redis_dep.get.side_effect = lambda key: None  # nothing stored
+        client.cookies.set("refresh_token", token)
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 401
+
+    async def test_refresh_honours_min_iat_revocation(self, client, test_user, mock_redis_dep):
+        fid, jti = "fam-iat", "jti-iat"
+        token = self._refresh_token(test_user.id, fid, jti)
+        future = int(datetime.now(UTC).timestamp()) + 100
+
+        def _get(key):
+            if key.startswith("token_min_iat:"):
+                return str(future)
+            return jti if key == f"refresh_family:{fid}" else None
+        mock_redis_dep.get.side_effect = _get
+
+        client.cookies.set("refresh_token", token)
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 401
+        assert "revoked" in r.json()["detail"].lower()
+
+    async def test_access_token_rejected_as_refresh(self, client, test_user):
+        from services.jwt import create_access_token
+        client.cookies.set("refresh_token", create_access_token(str(test_user.id)))
+        r = await client.post("/api/auth/refresh")
+        assert r.status_code == 401
+
+    async def test_refresh_token_rejected_as_access(self, client, test_user):
+        # A refresh token must not authenticate a normal request.
+        client.cookies.set("access_token", self._refresh_token(test_user.id))
+        r = await client.get("/api/auth/me")
+        assert r.status_code == 401

@@ -7,6 +7,48 @@ const api = axios.create({
   withCredentials: true,
 })
 
+// Access tokens are short-lived; on a 401 we transparently rotate the refresh
+// token via POST /auth/refresh and replay the original request once. Endpoints
+// where a 401 is a legitimate business response (bad login, expired reset link,
+// the refresh call itself) must NOT trigger a refresh attempt.
+const NO_REFRESH_PATHS = [
+  '/auth/refresh',
+  '/auth/login',
+  '/auth/register',
+  '/auth/mfa/verify',
+  '/auth/forgot-password',
+  '/auth/reset-password',
+]
+
+let refreshPromise = null
+
+// Guarded so the unit test's mocked axios instance (no interceptors) is a no-op.
+if (api.interceptors) {
+  api.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+      const { response, config } = error
+      const url = config?.url || ''
+      const skip = NO_REFRESH_PATHS.some((p) => url.includes(p))
+
+      if (response?.status === 401 && config && !config._retry && !skip) {
+        config._retry = true
+        try {
+          // De-dupe concurrent refreshes so a burst of 401s makes one call.
+          refreshPromise = refreshPromise || api.post('/auth/refresh')
+          await refreshPromise
+          return api(config) // replay the original request with fresh cookies
+        } catch (refreshError) {
+          return Promise.reject(refreshError)
+        } finally {
+          refreshPromise = null
+        }
+      }
+      return Promise.reject(error)
+    }
+  )
+}
+
 export default api
 
 // Auth
