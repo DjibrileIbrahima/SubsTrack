@@ -29,6 +29,16 @@ def plaid_error_code(exc: ApiException) -> str:
         return ""
 
 
+def plaid_error_code_from_exception(exc: BaseException) -> str | None:
+    """Find a Plaid error_code in an exception or its causes, for structured
+    logging (extra={"plaid_error_code": ...}) — the single most diagnostic
+    string when a sync fails."""
+    for candidate in (exc, exc.__cause__, exc.__context__):
+        if isinstance(candidate, ApiException):
+            return plaid_error_code(candidate) or None
+    return None
+
+
 def _sync_transactions_once(
     access_token: str, cursor: str | None
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:

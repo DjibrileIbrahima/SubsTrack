@@ -46,6 +46,16 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-substrack}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-substrack}
       REDIS_URL: redis://redis:6379
+    # Ship logs to CloudWatch (searchable via Logs Insights; pairs with
+    # LOG_FORMAT=json). Requires logs:CreateLogGroup/CreateLogStream/
+    # PutLogEvents on the instance role BEFORE this deploys — the container
+    # fails to start otherwise. See OBSERVABILITY.md Tier 2.
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_DEFAULT_REGION:-us-east-1}
+        awslogs-group: /substrack/backend
+        awslogs-create-group: "true"
 
   worker:
     build: ./backend
@@ -61,6 +71,12 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-substrack}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-substrack}
       REDIS_URL: redis://redis:6379
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_DEFAULT_REGION:-us-east-1}
+        awslogs-group: /substrack/worker
+        awslogs-create-group: "true"
 
   frontend:
     build: ./frontend

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import LinkedAccount, Subscription
 from services.groq_client import groq_model_call
+from services.plaid_service import plaid_error_code_from_exception
 from services.subscription_pipeline import run_subscription_pipeline
 from services.transaction_store import (
     ItemReauthRequired,
@@ -211,5 +212,9 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
         # Expected state, not a bug: account already marked login_required so
         # the UI surfaces the Reconnect flow. No stack trace needed.
         logger.warning("Webhook sync: item %s needs re-authentication", item_id)
-    except Exception:
-        logger.exception("Webhook sync failed for item_id=%s", item_id)
+    except Exception as exc:
+        code = plaid_error_code_from_exception(exc)
+        logger.exception(
+            "Webhook sync failed for item_id=%s", item_id,
+            extra={"plaid_error_code": code} if code else None,
+        )

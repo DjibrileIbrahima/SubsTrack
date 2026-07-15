@@ -84,17 +84,13 @@ Attach to the EC2 instance role (the same role that has `ssm:GetParametersByPath
 }
 ```
 
-### 2. docker-compose logging driver (code change — not yet applied)
-Add to the `backend` and `worker` services in `docker-compose.yml`:
+### 2. docker-compose logging driver (applied — in docker-compose.yml)
+The `backend` and `worker` services ship to log groups `/substrack/backend`
+and `/substrack/worker` via the `awslogs` driver.
 
-```yaml
-    logging:
-      driver: awslogs
-      options:
-        awslogs-region: us-east-1
-        awslogs-group: /substrack/backend        # /substrack/worker for the worker
-        awslogs-create-group: "true"
-```
+**Deploy order:** the IAM permission (part 1) must be attached BEFORE this
+compose config reaches the server — Docker refuses to start a container whose
+logging driver can't authenticate.
 
 With `LOG_FORMAT=json` (Tier 1), CloudWatch Logs Insights can then query
 structured fields directly, e.g. all slow requests:
@@ -139,17 +135,16 @@ sync duration, Plaid failure rate, alert-job outcomes.
 
 ---
 
-## Recommended code improvement (open TODO) 🔧
+## Structured Plaid error codes (applied)
 
-Plaid failures log raw tracebacks, but the **`error_code`** (the single most
-diagnostic string — see the 2026-07-14 incidents) is not attached as a
-structured field. Where `ApiException` is caught/logged, add:
+Sync failures attach the Plaid **`error_code`** (the single most diagnostic
+string — see the 2026-07-14 incidents) as a structured log field via
+`plaid_error_code_from_exception`. Sentry shows it in event extras and
+CloudWatch Insights can query it:
 
-```python
-logger.exception("...", extra={"plaid_error_code": plaid_error_code(exc)})
 ```
-
-so Sentry groups by code and CloudWatch can `filter plaid_error_code = "ITEM_LOGIN_REQUIRED"`.
+fields ts, msg, plaid_error_code | filter ispresent(plaid_error_code)
+```
 
 ---
 

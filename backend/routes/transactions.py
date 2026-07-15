@@ -13,6 +13,7 @@ from db.database import get_db
 from db.deps import get_current_user
 from db.models import LinkedAccount, Subscription, Transaction, User
 from limiter import limiter
+from services.plaid_service import plaid_error_code_from_exception
 from services.subscription_sync import (
     DETECTION_WINDOW_DAYS,
     detect_from_transactions,
@@ -164,9 +165,13 @@ async def sync_subscriptions(
                 "Reconnect button next to the bank, then sync again."
             ),
         )
-    except Exception:
+    except Exception as exc:
         await db.rollback()
-        logger.exception("Failed to sync subscriptions")
+        code = plaid_error_code_from_exception(exc)
+        logger.exception(
+            "Failed to sync subscriptions",
+            extra={"plaid_error_code": code} if code else None,
+        )
         raise HTTPException(status_code=500, detail="Failed to sync subscriptions")
 
 
