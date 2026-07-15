@@ -12,6 +12,9 @@ COPY . .
 # Run migrations then start server.
 # --proxy-headers makes uvicorn derive the client IP from X-Forwarded-For so the
 # rate limiter keys on the real client instead of the nginx container's IP.
-# Trusting all proxy IPs ("*") is safe only because this port is never published —
-# the only route to it is the nginx service on the compose network.
+# Trusting all proxy IPs ("*") is safe because (a) this port is never published —
+# the only route in is the nginx service on the compose network — AND (b) nginx
+# OVERWRITES X-Forwarded-For with the Cloudflare-verified client IP (see
+# frontend/nginx.conf real_ip config), so no client-supplied value ever reaches
+# uvicorn's XFF parsing. Both halves are required; don't relax either.
 CMD alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"

@@ -16,8 +16,21 @@ from arq.connections import RedisSettings  # noqa: E402
 
 from db.database import AsyncSessionLocal  # noqa: E402
 from services.alert_service import generate_upcoming_alerts  # noqa: E402
+from services.subscription_sync import sync_subscriptions_for_item  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+async def sync_item_job(ctx, item_id: str):
+    """Durable Plaid transaction sync, enqueued by the webhook route.
+
+    sync_subscriptions_for_item creates its own session and treats expected
+    Plaid states (re-auth required, etc.) as non-errors, so a normal run never
+    raises. Unexpected failures propagate to arq for retry (max_tries).
+    """
+    job_id = ctx.get("job_id", "unknown")
+    logger.info("job_start", extra={"job": "sync_item_job", "job_id": job_id, "item_id": item_id})
+    await sync_subscriptions_for_item(item_id)
 
 
 async def run_alert_job(ctx):
@@ -59,7 +72,7 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(
         os.getenv("REDIS_URL", "redis://localhost:6379")
     )
-    functions = [run_alert_job]
+    functions = [run_alert_job, sync_item_job]
     cron_jobs = [cron(run_alert_job, hour=8, minute=0)]
     on_startup = on_startup
     on_shutdown = on_shutdown

@@ -1,18 +1,42 @@
 import json
 import logging
+import os
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from arq import create_pool
+from arq.connections import RedisSettings
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import LinkedAccount
-from plaid_client import PLAID_ENV
-from services.subscription_sync import sync_subscriptions_for_item
+from limiter import limiter
 from services.webhook_verification import verify_plaid_webhook
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Webhooks are the only unauthenticated write path. Verification is enforced by
+# default; a missing signature is rejected unless this flag is explicitly set for
+# local development (Plaid's sandbox tester cannot sign requests).
+_ALLOW_UNVERIFIED_WEBHOOKS = os.getenv("PLAID_ALLOW_UNVERIFIED_WEBHOOKS", "false").lower() == "true"
+
+_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+_arq_pool = None
+
+
+async def enqueue_item_sync(item_id: str) -> None:
+    """Enqueue a durable transaction sync on the arq worker.
+
+    Replaces in-process BackgroundTasks so a sync survives a web-process restart:
+    the job lives in Redis and is retried on failure. The _job_id makes it
+    idempotent — a burst of webhooks for the same item collapses into one queued
+    job while the first is still pending or running.
+    """
+    global _arq_pool
+    if _arq_pool is None:
+        _arq_pool = await create_pool(RedisSettings.from_dsn(_REDIS_URL))
+    await _arq_pool.enqueue_job("sync_item_job", item_id, _job_id=f"sync:{item_id}")
 
 # All of these mean "new data is available via /transactions/sync" — including
 # TRANSACTIONS_REMOVED, since the sync cursor also delivers removals.
@@ -35,9 +59,9 @@ ITEM_STATUS_BY_CODE = {
 
 
 @router.post("/plaid")
+@limiter.limit("120/minute")
 async def plaid_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     raw_body = await request.body()
@@ -49,7 +73,7 @@ async def plaid_webhook(
         except ValueError as exc:
             logger.warning("Webhook signature verification failed: %s", exc)
             raise HTTPException(status_code=400, detail="Invalid webhook signature")
-    elif PLAID_ENV == "production":
+    elif not _ALLOW_UNVERIFIED_WEBHOOKS:
         raise HTTPException(status_code=401, detail="Missing Plaid-Verification header")
 
     try:
@@ -67,7 +91,7 @@ async def plaid_webhook(
     )
 
     if webhook_type == "TRANSACTIONS":
-        return _handle_transactions(webhook_code, item_id, background_tasks)
+        return await _handle_transactions(webhook_code, item_id)
 
     if webhook_type == "ITEM":
         return await _handle_item(webhook_code, item_id, body.get("error"), db)
@@ -78,13 +102,19 @@ async def plaid_webhook(
     return {"received": True, "webhook_type": webhook_type, "webhook_code": webhook_code}
 
 
-def _handle_transactions(code: str, item_id: str | None, background_tasks: BackgroundTasks) -> dict:
+async def _handle_transactions(code: str, item_id: str | None) -> dict:
     if code not in TRANSACTIONS_CODES:
         logger.debug("Unhandled TRANSACTIONS code: %s", code)
         return {"received": True, "action": "ignored"}
 
     if code in SYNC_TRIGGER_CODES and item_id:
-        background_tasks.add_task(sync_subscriptions_for_item, item_id)
+        try:
+            await enqueue_item_sync(item_id)
+        except Exception:
+            # Don't ack a sync we failed to persist — a non-2xx makes Plaid
+            # redeliver the webhook, so the update isn't lost.
+            logger.exception("Failed to enqueue sync for item %s", item_id)
+            raise HTTPException(status_code=503, detail="Could not enqueue sync; please retry")
         logger.info("TRANSACTIONS.%s for item %s — sync enqueued", code, item_id)
     else:
         logger.info("TRANSACTIONS.%s for item %s — acknowledged", code, item_id)
