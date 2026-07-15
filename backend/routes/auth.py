@@ -12,7 +12,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +23,7 @@ from db.deps import (
     get_redis,
     revoke_user_sessions,
 )
-from db.models import LinkedAccount, PasswordResetToken, Subscription, User
+from db.models import Alert, LinkedAccount, PasswordResetToken, Subscription, Transaction, User
 from limiter import limiter
 from services import plaid_service
 from services.email import send_reset_email
@@ -728,6 +728,9 @@ def _serialize_user(user: User) -> dict:
         "alert_sms": user.alert_sms,
         "phone": user.phone,
         "mfa_enabled": user.mfa_enabled,
+        # Lets the UI know whether to ask for a password on account deletion
+        # (OAuth-only users have none).
+        "has_password": user.hashed_password is not None,
     }
 
 
@@ -757,3 +760,71 @@ async def update_me(
     await db.commit()
     await db.refresh(current_user)
     return _serialize_user(current_user)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str | None = None
+
+
+@router.post("/delete-account")
+@limiter.limit("5/minute")
+async def delete_account(
+    request: Request,
+    response: Response,
+    body: DeleteAccountRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete the current user's account and all associated data.
+
+    Irreversible, so password users must re-enter their password. Every Plaid
+    item is revoked first (all-or-nothing, like unlink) so deletion never orphans
+    a live token at Plaid.
+    """
+    # Re-authenticate password users. OAuth-only users have no password; the
+    # session cookie plus CSRF/Origin checks are the proof of intent there.
+    if current_user.hashed_password:
+        if not body.password or not await _verify_password(body.password, current_user.hashed_password):
+            raise HTTPException(status_code=403, detail="Password is incorrect")
+
+    user_id = current_user.id
+
+    accounts = (
+        await db.execute(select(LinkedAccount).where(LinkedAccount.user_id == user_id))
+    ).scalars().all()
+    for account in accounts:
+        try:
+            await plaid_service.remove_item(decrypt(account.access_token))
+        except Exception:
+            logger.exception("Plaid item removal failed during account deletion for user %s", user_id)
+            raise HTTPException(
+                status_code=502,
+                detail="Couldn't disconnect a bank from Plaid. Please try again.",
+            )
+
+    # Explicit FK-safe deletes: async SQLAlchemy can't lazy-load ORM relationship
+    # cascades during flush, so delete children directly, in dependency order.
+    await db.execute(delete(Alert).where(Alert.user_id == user_id))
+    await db.execute(delete(Transaction).where(Transaction.user_id == user_id))
+    await db.execute(delete(Subscription).where(Subscription.user_id == user_id))
+    await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
+    await db.execute(delete(LinkedAccount).where(LinkedAccount.user_id == user_id))
+    await db.execute(delete(User).where(User.id == user_id))
+    await db.commit()
+
+    # Tear down the session: revoke the refresh family and clear both cookies.
+    refresh_token = request.cookies.get("refresh_token")
+    if refresh_token:
+        try:
+            rp = decode_refresh_token(refresh_token)
+            if rp.get("fid"):
+                await redis.delete(f"{_REFRESH_FAMILY_PREFIX}{rp['fid']}")
+        except HTTPException:
+            pass
+    await revoke_user_sessions(redis, str(user_id))
+    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path=REFRESH_COOKIE_PATH)
+
+    logger.info("account_deleted", extra={"user_id": str(user_id)})
+    return {"message": "Account deleted"}

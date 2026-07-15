@@ -15,10 +15,11 @@ vi.mock('../api', () => ({
   updateMe: vi.fn(),
   getAccounts: vi.fn(),
   unlinkAccount: vi.fn(),
+  deleteAccount: vi.fn(),
 }))
 
 import { useAuth } from '../context/AuthContext'
-import { updateMe, getAccounts, unlinkAccount } from '../api'
+import { updateMe, getAccounts, unlinkAccount, deleteAccount } from '../api'
 
 const MOCK_USER = {
   email: 'user@example.com',
@@ -383,5 +384,63 @@ describe('Settings — navigation', () => {
     render(<Settings onNavigate={onNavigate} />)
     await userEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(onNavigate).toHaveBeenCalledWith('dashboard')
+  })
+})
+
+// ── Delete account ───────────────────────────────────────────────────────────
+
+describe('Settings — delete account', () => {
+  it('shows a Delete account button', () => {
+    renderSettings()
+    expect(screen.getByRole('button', { name: /delete account/i })).toBeInTheDocument()
+  })
+
+  it('reveals a password field for password users on confirm', async () => {
+    useAuth.mockReturnValue({ user: { ...MOCK_USER, has_password: true }, updateUser: vi.fn() })
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    expect(screen.getByPlaceholderText(/password/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /permanently delete/i })).toBeInTheDocument()
+  })
+
+  it('does not show a password field for OAuth users', async () => {
+    useAuth.mockReturnValue({ user: { ...MOCK_USER, has_password: false }, updateUser: vi.fn() })
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    expect(screen.queryByPlaceholderText(/password/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /permanently delete/i })).toBeInTheDocument()
+  })
+
+  it('calls deleteAccount with the password and clears the user on success', async () => {
+    const updateUser = vi.fn()
+    useAuth.mockReturnValue({ user: { ...MOCK_USER, has_password: true }, updateUser })
+    deleteAccount.mockResolvedValue({ message: 'Account deleted' })
+
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    await userEvent.type(screen.getByPlaceholderText(/password/i), 'secret123')
+    await userEvent.click(screen.getByRole('button', { name: /permanently delete/i }))
+
+    await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith('secret123'))
+    await waitFor(() => expect(updateUser).toHaveBeenCalledWith(null))
+  })
+
+  it('shows the server error when deletion fails', async () => {
+    useAuth.mockReturnValue({ user: { ...MOCK_USER, has_password: true }, updateUser: vi.fn() })
+    deleteAccount.mockRejectedValue({ response: { data: { detail: 'Password is incorrect' } } })
+
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    await userEvent.type(screen.getByPlaceholderText(/password/i), 'wrong')
+    await userEvent.click(screen.getByRole('button', { name: /permanently delete/i }))
+
+    expect(await screen.findByText(/password is incorrect/i)).toBeInTheDocument()
+  })
+
+  it('can cancel the confirm step', async () => {
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    expect(screen.queryByRole('button', { name: /permanently delete/i })).not.toBeInTheDocument()
   })
 })
