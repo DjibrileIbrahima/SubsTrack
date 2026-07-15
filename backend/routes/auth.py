@@ -97,6 +97,39 @@ _MFA_SESSION_TTL = 300  # seconds — how long the temp token is valid after pas
 _MFA_SESSION_PREFIX = "mfa_session:"
 _REFRESH_FAMILY_PREFIX = "refresh_family:"
 
+# Per-account brute-force lockout. Complements the per-IP limit on /login: with
+# real client IPs (see nginx real_ip config), a distributed attack that spreads
+# under the per-IP cap is still stopped once it accumulates enough failures
+# against one account. Keyed on the normalized email, so unknown and known
+# accounts lock identically (no enumeration signal). Temporary and self-clearing;
+# the tradeoff is that an attacker can briefly lock a victim's PASSWORD login —
+# OAuth is unaffected and the lock lifts after the window.
+_LOGIN_FAIL_PREFIX = "login_fail:"
+_LOGIN_MAX_FAILS = int(os.getenv("LOGIN_MAX_FAILS", "10"))
+_LOGIN_FAIL_WINDOW = int(os.getenv("LOGIN_FAIL_WINDOW_SECONDS", "900"))  # 15 minutes
+
+
+async def _assert_not_locked_out(redis, email: str) -> None:
+    count = await redis.get(f"{_LOGIN_FAIL_PREFIX}{email}")
+    if count is not None and int(count) >= _LOGIN_MAX_FAILS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts for this account. Try again later.",
+            headers={"Retry-After": str(_LOGIN_FAIL_WINDOW)},
+        )
+
+
+async def _record_login_failure(redis, email: str) -> None:
+    key = f"{_LOGIN_FAIL_PREFIX}{email}"
+    await redis.incr(key)
+    # Refresh the TTL on each failure (sliding window): sustained attacks stay
+    # locked, while a few stray failures clear themselves after the window.
+    await redis.expire(key, _LOGIN_FAIL_WINDOW)
+
+
+async def _clear_login_failures(redis, email: str) -> None:
+    await redis.delete(f"{_LOGIN_FAIL_PREFIX}{email}")
+
 
 def set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
@@ -187,9 +220,15 @@ async def login(
     db: AsyncSession = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
 ):
+    email = _normalize_email(body.email)
+    await _assert_not_locked_out(redis, email)
+
     user = await _get_user_by_email(db, body.email)
     if not await _verify_password(body.password, user.hashed_password if user else None):
+        await _record_login_failure(redis, email)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    await _clear_login_failures(redis, email)
 
     if user.mfa_enabled and user.mfa_secret:
         mfa_token = await _create_mfa_session(str(user.id))
