@@ -6,6 +6,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from observability import request_id_var
+
 logger = logging.getLogger("substrack.access")
 
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -68,6 +70,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+        # Propagate to the log-record factory so every log line in this request
+        # (route handlers, services, slow-query warnings) carries the same id.
+        request_id_var.set(request_id)
         start = time.perf_counter()
 
         response = await call_next(request)
@@ -76,8 +81,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         status = response.status_code
         is_audit = any(request.url.path.startswith(p) for p in _AUDIT_PREFIXES)
 
+        # request_id is injected onto every record by the log-record factory
+        # (see observability.py); passing it in extra here would collide.
         extra = {
-            "request_id": request_id,
             "method": request.method,
             "path": request.url.path,
             "status": status,
