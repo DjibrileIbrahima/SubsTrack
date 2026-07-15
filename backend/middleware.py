@@ -3,9 +3,45 @@ import time
 import uuid
 
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("substrack.access")
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class CSRFOriginMiddleware(BaseHTTPMiddleware):
+    """Reject state-changing requests whose Origin header is present but not
+    trusted — a second CSRF layer behind the SameSite=Lax session cookie.
+
+    Browsers always send Origin on cross-site state-changing requests (fetch and
+    form POSTs alike) and a malicious page cannot forge or suppress it, so a
+    forged request from another site is caught here. Only fires when Origin is
+    present, so non-browser API clients and Plaid's server-to-server webhooks
+    (no Origin header) are unaffected. Webhooks are additionally excluded and
+    protected by signature verification instead.
+    """
+
+    def __init__(self, app, trusted_origins: set[str]):
+        super().__init__(app)
+        self._trusted = trusted_origins
+
+    async def dispatch(self, request: Request, call_next):
+        if (
+            request.method in _STATE_CHANGING_METHODS
+            and not request.url.path.startswith("/api/webhooks/")
+        ):
+            origin = request.headers.get("origin")
+            if origin and origin not in self._trusted:
+                logger.warning(
+                    "csrf_rejected",
+                    extra={"path": request.url.path, "method": request.method, "origin": origin},
+                )
+                return JSONResponse(
+                    status_code=403, content={"detail": "Cross-origin request rejected"}
+                )
+        return await call_next(request)
 
 # Paths that produce a structured audit record (login, bank ops, subscription writes)
 _AUDIT_PREFIXES = (
