@@ -132,6 +132,63 @@ class TestLogin:
         assert cookie is not None
 
 
+# ─── Per-account login lockout ───────────────────────────────────────────────
+
+class TestLoginAccountLockout:
+    def _fail_count_getter(self, count):
+        def _get(key):
+            return str(count) if key.startswith("login_fail:") else None
+        return _get
+
+    async def test_locked_out_returns_429_with_retry_after(self, client, test_user, mock_redis_dep):
+        mock_redis_dep.get.side_effect = self._fail_count_getter(10)
+        r = await client.post(
+            "/api/auth/login", json={"email": test_user.email, "password": "password123"}
+        )
+        assert r.status_code == 429
+        assert r.headers.get("Retry-After")
+
+    async def test_failed_login_records_failure(self, client, test_user, mock_redis_dep):
+        r = await client.post(
+            "/api/auth/login", json={"email": test_user.email, "password": "wrongpass"}
+        )
+        assert r.status_code == 401
+        assert mock_redis_dep.incr.await_count == 1
+        assert mock_redis_dep.incr.await_args.args[0] == f"login_fail:{test_user.email}"
+
+    async def test_successful_login_clears_failures(self, client, test_user, mock_redis_dep):
+        r = await client.post(
+            "/api/auth/login", json={"email": test_user.email, "password": "password123"}
+        )
+        assert r.status_code == 200
+        cleared = [
+            c.args[0] for c in mock_redis_dep.delete.await_args_list
+            if c.args[0].startswith("login_fail:")
+        ]
+        assert cleared == [f"login_fail:{test_user.email}"]
+
+    async def test_lockout_keyed_on_normalized_email(self, client, test_user, mock_redis_dep):
+        seen = []
+
+        def _get(key):
+            seen.append(key)
+            return None
+        mock_redis_dep.get.side_effect = _get
+
+        await client.post(
+            "/api/auth/login", json={"email": "TEST@Example.COM", "password": "wrongpass"}
+        )
+        assert f"login_fail:{test_user.email}" in seen  # lowercased key
+
+    async def test_unknown_email_locks_out_too_no_enumeration(self, client, mock_redis_dep):
+        mock_redis_dep.get.side_effect = self._fail_count_getter(10)
+        r = await client.post(
+            "/api/auth/login", json={"email": "ghost@example.com", "password": "whatever"}
+        )
+        # Same 429 as a real locked account — the lock reveals nothing about existence.
+        assert r.status_code == 429
+
+
 # ─── POST /api/auth/logout ────────────────────────────────────────────────────
 
 class TestLogout:
