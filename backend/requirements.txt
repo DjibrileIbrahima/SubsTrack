@@ -15,6 +15,7 @@ slowapi
 redis
 groq
 pyotp
+boto3  # AWS KMS envelope encryption for secrets at rest
 # Observability
 sentry-sdk[fastapi]
 prometheus-fastapi-instrumentator
