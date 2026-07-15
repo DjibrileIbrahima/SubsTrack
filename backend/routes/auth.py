@@ -17,13 +17,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.deps import get_current_user, get_redis, revoke_user_sessions
+from db.deps import (
+    _TOKEN_MIN_IAT_PREFIX,
+    get_current_user,
+    get_redis,
+    revoke_user_sessions,
+)
 from db.models import LinkedAccount, PasswordResetToken, Subscription, User
 from limiter import limiter
 from services import plaid_service
 from services.email import send_reset_email
 from services.encryption import decrypt, encrypt
-from services.jwt import create_access_token, decode_access_token
+from services.jwt import (
+    REFRESH_EXPIRE_DAYS,
+    create_access_token,
+    create_refresh_token,
+    decode_access_token,
+    decode_refresh_token,
+)
 from services.mfa import encrypt_secret, generate_totp_secret, get_totp_uri, verify_totp
 
 
@@ -76,10 +87,15 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
-COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days — access cookie lifespan (JWT exp is shorter)
+REFRESH_COOKIE_MAX_AGE = REFRESH_EXPIRE_DAYS * 86400
+# The refresh cookie is scoped to /api/auth so it's only ever sent to the
+# refresh and logout endpoints, not on every API request.
+REFRESH_COOKIE_PATH = "/api/auth"
 
 _MFA_SESSION_TTL = 300  # seconds — how long the temp token is valid after password check
 _MFA_SESSION_PREFIX = "mfa_session:"
+_REFRESH_FAMILY_PREFIX = "refresh_family:"
 
 
 def set_auth_cookie(response: Response, token: str) -> None:
@@ -88,6 +104,24 @@ def set_auth_cookie(response: Response, token: str) -> None:
         httponly=True, secure=COOKIE_SECURE,
         samesite="lax", max_age=COOKIE_MAX_AGE, path="/",
     )
+
+
+def set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="refresh_token", value=token,
+        httponly=True, secure=COOKIE_SECURE,
+        samesite="lax", max_age=REFRESH_COOKIE_MAX_AGE, path=REFRESH_COOKIE_PATH,
+    )
+
+
+async def _issue_session(response: Response, redis, user_id: str) -> None:
+    """Mint an access + refresh token pair, register the refresh family in Redis,
+    and set both cookies. Used by every successful first-factor completion."""
+    family_id = str(uuid.uuid4())
+    jti = str(uuid.uuid4())
+    await redis.setex(f"{_REFRESH_FAMILY_PREFIX}{family_id}", REFRESH_COOKIE_MAX_AGE, jti)
+    set_auth_cookie(response, create_access_token(user_id))
+    set_refresh_cookie(response, create_refresh_token(user_id, family_id, jti))
 
 
 def _redis() -> aioredis.Redis:
@@ -114,7 +148,13 @@ class RegisterRequest(BaseModel):
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
-async def register(request: Request, response: Response, body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(
+    request: Request,
+    response: Response,
+    body: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
     if await _get_user_by_email(db, body.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     if len(body.password) < 8:
@@ -129,8 +169,7 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
         await db.rollback()
         raise HTTPException(status_code=400, detail="Email already registered")
     await db.refresh(user)
-    token = create_access_token(str(user.id))
-    set_auth_cookie(response, token)
+    await _issue_session(response, redis, str(user.id))
     return {"email": user.email}
 
 
@@ -141,7 +180,13 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 @limiter.limit("10/minute")
-async def login(request: Request, response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    request: Request,
+    response: Response,
+    body: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
     user = await _get_user_by_email(db, body.email)
     if not await _verify_password(body.password, user.hashed_password if user else None):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -150,8 +195,7 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
         mfa_token = await _create_mfa_session(str(user.id))
         return JSONResponse(status_code=202, content={"mfa_required": True, "mfa_token": mfa_token})
 
-    token = create_access_token(str(user.id))
-    set_auth_cookie(response, token)
+    await _issue_session(response, redis, str(user.id))
     return {"email": user.email}
 
 
@@ -172,8 +216,77 @@ async def logout(
                 await redis.setex(f"token_blocklist:{jti}", ttl, "1")
         except HTTPException:
             pass  # expired token — no need to blocklist
+
+    # Kill the refresh family so the long-lived token can't mint new sessions.
+    refresh_token = request.cookies.get("refresh_token")
+    if refresh_token:
+        try:
+            rp = decode_refresh_token(refresh_token)
+            if rp.get("fid"):
+                await redis.delete(f"{_REFRESH_FAMILY_PREFIX}{rp['fid']}")
+        except HTTPException:
+            pass  # expired/invalid refresh token — nothing to revoke
+
     response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path=REFRESH_COOKIE_PATH)
     return {"message": "Logged out"}
+
+
+@router.post("/refresh")
+@limiter.limit("60/minute")
+async def refresh(
+    request: Request,
+    response: Response,
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Rotate the refresh token and issue a new access token.
+
+    Rotation with reuse detection: each refresh mints a new jti for the family
+    and stores it as the only valid one. A superseded jti presented later means
+    the token was captured and replayed — the whole family is revoked and all of
+    the user's sessions are killed.
+    """
+    token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token")
+
+    try:
+        payload = decode_refresh_token(token)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    user_id = payload.get("sub")
+    family_id = payload.get("fid")
+    jti = payload.get("jti")
+    if not user_id or not family_id or not jti:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Honour password-reset revocation (token_min_iat) for refresh tokens too.
+    min_iat = await redis.get(f"{_TOKEN_MIN_IAT_PREFIX}{user_id}")
+    if min_iat is not None:
+        iat = payload.get("iat")
+        if iat is None or int(iat) < int(min_iat):
+            raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+
+    family_key = f"{_REFRESH_FAMILY_PREFIX}{family_id}"
+    current_jti = await redis.get(family_key)
+    if current_jti is None:
+        # Family expired or was revoked (logout / reuse) — force a fresh login.
+        raise HTTPException(status_code=401, detail="Refresh session expired")
+    if current_jti != jti:
+        # A superseded token was replayed → token theft. Burn the family and
+        # every session for this user.
+        await redis.delete(family_key)
+        await revoke_user_sessions(redis, user_id)
+        logger.warning("Refresh token reuse detected", extra={"user_id": user_id})
+        raise HTTPException(status_code=401, detail="Refresh token reuse detected")
+
+    # Rotate: the new jti becomes the only valid token in the family.
+    new_jti = str(uuid.uuid4())
+    await redis.setex(family_key, REFRESH_COOKIE_MAX_AGE, new_jti)
+    set_auth_cookie(response, create_access_token(user_id))
+    set_refresh_cookie(response, create_refresh_token(user_id, family_id, new_jti))
+    return {"refreshed": True}
 
 
 # ── MFA ───────────────────────────────────────────────────────────────────────
@@ -243,6 +356,7 @@ async def mfa_verify(
     response: Response,
     body: MfaVerifyRequest,
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     """Second step of MFA login. Validates the temp token from Redis and the TOTP code."""
     r = _redis()
@@ -260,8 +374,7 @@ async def mfa_verify(
     finally:
         await r.aclose()
 
-    token = create_access_token(str(user.id))
-    set_auth_cookie(response, token)
+    await _issue_session(response, redis, str(user.id))
     return {"email": user.email}
 
 
@@ -288,7 +401,13 @@ async def google_login():
 
 
 @router.get("/google/callback")
-async def google_callback(code: str, state: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def google_callback(
+    code: str,
+    state: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or not secrets.compare_digest(stored_state, state):
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
@@ -341,9 +460,8 @@ async def google_callback(code: str, state: str, request: Request, db: AsyncSess
         response.delete_cookie(key="oauth_state", path="/")
         return response
 
-    token = create_access_token(str(user.id))
     response = RedirectResponse(f"{FRONTEND_URL}/")
-    set_auth_cookie(response, token)
+    await _issue_session(response, redis, str(user.id))
     response.delete_cookie(key="oauth_state", path="/")
     return response
 

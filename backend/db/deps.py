@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import User
-from services.jwt import JWT_EXPIRE_MINUTES, decode_access_token
+from services.jwt import REFRESH_EXPIRE_DAYS, decode_access_token
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 _redis_pool: aioredis.Redis | None = None
@@ -30,11 +30,12 @@ async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
 
 
 async def revoke_user_sessions(redis: aioredis.Redis, user_id: str) -> None:
-    """Invalidate every token issued before now for this user (e.g. after a
-    password reset). The marker expires when the oldest possibly-live token
-    would have expired anyway."""
+    """Invalidate every access AND refresh token issued before now for this user
+    (e.g. after a password reset). The marker's TTL covers the refresh window —
+    the longest-lived token carrying an iat — so it can't expire while a
+    pre-reset refresh token is still alive."""
     await redis.setex(
-        f"{_TOKEN_MIN_IAT_PREFIX}{user_id}", JWT_EXPIRE_MINUTES * 60, int(time.time())
+        f"{_TOKEN_MIN_IAT_PREFIX}{user_id}", REFRESH_EXPIRE_DAYS * 86400, int(time.time())
     )
 
 
