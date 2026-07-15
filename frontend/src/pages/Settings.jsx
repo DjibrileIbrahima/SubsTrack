@@ -35,6 +35,7 @@ export default function Settings({ onNavigate }) {
   // Delete-account state
   const [deleteStep, setDeleteStep] = useState('idle') // 'idle' | 'confirm'
   const [deletePassword, setDeletePassword] = useState('')
+  const [deleteCode, setDeleteCode] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
@@ -131,10 +132,17 @@ export default function Settings({ onNavigate }) {
       setDeleteError('Enter your password to confirm.')
       return
     }
+    if (user?.mfa_enabled && deleteCode.length !== 6) {
+      setDeleteError('Enter your 6-digit authenticator code.')
+      return
+    }
     setDeleting(true)
     setDeleteError('')
     try {
-      await deleteAccount(user?.has_password ? deletePassword : undefined)
+      await deleteAccount(
+        user?.has_password ? deletePassword : undefined,
+        user?.mfa_enabled ? deleteCode : undefined,
+      )
       // Cookies are cleared server-side; drop the user so the app returns to auth.
       updateUser(null)
     } catch (e) {
@@ -369,7 +377,7 @@ export default function Settings({ onNavigate }) {
             </div>
             <button
               className="unlink-btn"
-              onClick={() => { setDeleteStep('confirm'); setDeletePassword(''); setDeleteError('') }}
+              onClick={() => { setDeleteStep('confirm'); setDeletePassword(''); setDeleteCode(''); setDeleteError('') }}
             >
               Delete account
             </button>
@@ -392,6 +400,19 @@ export default function Settings({ onNavigate }) {
                 onKeyDown={e => e.key === 'Enter' && handleDeleteAccount()}
                 style={{ marginBottom: 12 }}
                 autoFocus
+              />
+            )}
+            {user?.mfa_enabled && (
+              <input
+                className="form-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="6-digit authenticator code"
+                maxLength={6}
+                value={deleteCode}
+                onChange={e => setDeleteCode(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={e => e.key === 'Enter' && handleDeleteAccount()}
+                style={{ marginBottom: 12 }}
               />
             )}
             {deleteError && <p className="form-error" style={{ marginBottom: 8 }}>{deleteError}</p>}

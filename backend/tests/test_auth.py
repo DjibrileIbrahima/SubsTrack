@@ -1134,3 +1134,36 @@ class TestDeleteAccount:
         r = await auth_client.get("/api/auth/me")
         assert r.status_code == 200
         assert r.json()["has_password"] is True
+
+    async def _enable_mfa(self, db, user, secret="JBSWY3DPEHPK3PXP"):
+        user.mfa_enabled = True
+        user.mfa_secret = _encrypt(secret)
+        await db.flush()
+
+    async def test_mfa_user_missing_code_returns_403(self, auth_client, db, test_user):
+        await self._enable_mfa(db, test_user)
+        r = await auth_client.post("/api/auth/delete-account", json={"password": "password123"})
+        assert r.status_code == 403
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is not None
+
+    async def test_mfa_user_wrong_code_returns_403(self, auth_client, db, test_user):
+        await self._enable_mfa(db, test_user)
+        r = await auth_client.post(
+            "/api/auth/delete-account", json={"password": "password123", "code": "000000"}
+        )
+        assert r.status_code == 403
+
+    async def test_mfa_user_valid_code_deletes(self, auth_client, db, test_user):
+        import pyotp
+        secret = "JBSWY3DPEHPK3PXP"
+        await self._enable_mfa(db, test_user, secret)
+        code = pyotp.TOTP(secret).now()
+        r = await auth_client.post(
+            "/api/auth/delete-account", json={"password": "password123", "code": code}
+        )
+        assert r.status_code == 200
+        assert (await db.execute(
+            select(User).where(User.id == test_user.id)
+        )).scalar_one_or_none() is None

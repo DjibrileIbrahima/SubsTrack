@@ -421,7 +421,28 @@ describe('Settings — delete account', () => {
     await userEvent.type(screen.getByPlaceholderText(/password/i), 'secret123')
     await userEvent.click(screen.getByRole('button', { name: /permanently delete/i }))
 
-    await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith('secret123'))
+    await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith('secret123', undefined))
+    await waitFor(() => expect(updateUser).toHaveBeenCalledWith(null))
+  })
+
+  it('requires and sends a 6-digit code for MFA users', async () => {
+    const updateUser = vi.fn()
+    useAuth.mockReturnValue({
+      user: { ...MOCK_USER, has_password: true, mfa_enabled: true },
+      updateUser,
+    })
+    deleteAccount.mockResolvedValue({ message: 'Account deleted' })
+
+    renderSettings()
+    await userEvent.click(screen.getByRole('button', { name: /delete account/i }))
+    const codeField = screen.getByPlaceholderText(/authenticator code/i)
+    expect(codeField).toBeInTheDocument()
+
+    await userEvent.type(screen.getByPlaceholderText(/password/i), 'secret123')
+    await userEvent.type(codeField, '123456')
+    await userEvent.click(screen.getByRole('button', { name: /permanently delete/i }))
+
+    await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith('secret123', '123456'))
     await waitFor(() => expect(updateUser).toHaveBeenCalledWith(null))
   })
 

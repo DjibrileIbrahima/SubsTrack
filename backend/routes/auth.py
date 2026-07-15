@@ -764,6 +764,7 @@ async def update_me(
 
 class DeleteAccountRequest(BaseModel):
     password: str | None = None
+    code: str | None = None
 
 
 @router.post("/delete-account")
@@ -787,6 +788,12 @@ async def delete_account(
     if current_user.hashed_password:
         if not body.password or not await _verify_password(body.password, current_user.hashed_password):
             raise HTTPException(status_code=403, detail="Password is incorrect")
+
+    # If MFA is enabled, require a current TOTP too — same second factor that
+    # gates login must gate this irreversible action.
+    if current_user.mfa_enabled and current_user.mfa_secret:
+        if not body.code or not verify_totp(current_user.mfa_secret, body.code):
+            raise HTTPException(status_code=403, detail="Invalid two-factor code")
 
     user_id = current_user.id
 
