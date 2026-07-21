@@ -244,6 +244,7 @@ Create one parameter for each:
 /substrack/GOOGLE_CLIENT_ID
 /substrack/GOOGLE_CLIENT_SECRET
 /substrack/RESEND_API_KEY
+/substrack/ALERT_FROM_EMAIL
 ```
 
 ### Create an IAM role for your EC2 instance
@@ -293,6 +294,9 @@ JWT_SECRET=$(fetch JWT_SECRET)
 GOOGLE_CLIENT_ID=$(fetch GOOGLE_CLIENT_ID)
 GOOGLE_CLIENT_SECRET=$(fetch GOOGLE_CLIENT_SECRET)
 GOOGLE_REDIRECT_URI=http://YOUR_ELASTIC_IP/api/auth/google/callback
+
+RESEND_API_KEY=$(fetch RESEND_API_KEY)
+ALERT_FROM_EMAIL=$(fetch ALERT_FROM_EMAIL)
 
 FRONTEND_URL=http://YOUR_ELASTIC_IP
 CORS_ORIGINS=http://YOUR_ELASTIC_IP
