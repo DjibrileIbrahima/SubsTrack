@@ -72,6 +72,12 @@ async def verify_plaid_webhook(token: str, raw_body: bytes) -> None:
             raise ValueError("JWT signature verification failed")
         except jwt.PyJWTError as exc:
             raise ValueError(f"JWT decode error: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(
+                f"Could not fetch verification key {kid!r} (status {exc.response.status_code})"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ValueError(f"Could not fetch verification key {kid!r}: {exc}") from exc
 
     iat = claims.get("iat")
     if iat is None:
