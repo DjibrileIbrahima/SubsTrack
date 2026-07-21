@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -14,6 +15,13 @@ logger = logging.getLogger(__name__)
 _jwk_cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL = 300  # seconds
 _MAX_AGE = 300    # reject tokens older than 5 minutes
+
+# A freshly rotated signing key can take a moment to propagate to Plaid's
+# verification_keys endpoint. This shows up as a 404 for a kid that is
+# otherwise legitimate, most often right after linking (a burst of webhooks,
+# e.g. INITIAL_UPDATE, fires immediately). Worth one short retry before
+# treating it as a genuinely invalid/unknown key.
+_KEY_PROPAGATION_RETRY_DELAY = 1.5
 
 _JWK_BASE = {
     "sandbox": "https://sandbox.plaid.com/webhook/v2/verification_keys/",
@@ -73,6 +81,13 @@ async def verify_plaid_webhook(token: str, raw_body: bytes) -> None:
         except jwt.PyJWTError as exc:
             raise ValueError(f"JWT decode error: {exc}") from exc
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404 and attempt == 0:
+                logger.warning(
+                    "Verification key %r not found (404) — may be a freshly rotated key, retrying in %.1fs",
+                    kid, _KEY_PROPAGATION_RETRY_DELAY,
+                )
+                await asyncio.sleep(_KEY_PROPAGATION_RETRY_DELAY)
+                continue
             raise ValueError(
                 f"Could not fetch verification key {kid!r} (status {exc.response.status_code})"
             ) from exc
