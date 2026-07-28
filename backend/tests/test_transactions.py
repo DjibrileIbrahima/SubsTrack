@@ -872,7 +872,12 @@ class TestGetSummary:
         assert r.status_code == 400
 
     async def test_groups_by_month(self, auth_client, test_account, db, test_user):
-        """Summary aggregates the stored transactions by month — no Plaid call."""
+        """Summary aggregates subscription-linked transactions by month — no Plaid call."""
+        db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
+                            amount=15.99, frequency="monthly", source="plaid"))
+        db.add(Subscription(user_id=test_user.id, merchant="Spotify", merchant_key="spotify",
+                            amount=9.99, frequency="monthly", source="plaid"))
+
         this_month = date.today().replace(day=15)
         prev_month = (date.today().replace(day=1) - timedelta(days=1)).replace(day=15)
 
@@ -898,8 +903,39 @@ class TestGetSummary:
         prev = next(s for s in summary if s["month"] == prev_month.isoformat()[:7])
         assert abs(prev["total"] - 25.98) < 0.01
 
+    async def test_excludes_transactions_not_tied_to_a_subscription(
+        self, auth_client, test_account, db, test_user
+    ):
+        """A one-off purchase (groceries, gas, ...) must not spike the chart —
+        it's meant to track the same spend Monthly Spend/Annual Est. project."""
+        db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
+                            amount=15.99, frequency="monthly", source="plaid"))
+        db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
+        db.add(_make_txn_row(test_user.id, test_account.id, "WHOLE FOODS", 120.00, days_back=10))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        entry = next(s for s in r.json()["monthly_summary"] if s["month"] == month)
+        assert abs(entry["total"] - 15.99) < 0.01  # groceries excluded
+
+    async def test_no_active_subscriptions_yields_empty_summary(
+        self, auth_client, test_account, db, test_user
+    ):
+        """No active subscriptions to attribute spend to → nothing to chart,
+        even though raw transactions exist."""
+        db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        assert r.json()["monthly_summary"] == []
+
     async def test_ignores_negative_amounts(self, auth_client, test_account, db, test_user):
         """Negative transactions (refunds) should be excluded from summary."""
+        db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
+                            amount=15.99, frequency="monthly", source="plaid"))
         db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
         db.add(_make_txn_row(test_user.id, test_account.id, "REFUND", -5.00, days_back=10))
         await db.flush()
