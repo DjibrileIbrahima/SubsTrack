@@ -6,9 +6,7 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: true },
-    },
+    maxWorkers: 1,
     globals: true,
     setupFiles: './src/test/setup.js',
     coverage: {
