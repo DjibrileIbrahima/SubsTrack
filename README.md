@@ -44,10 +44,11 @@ SubsTrack/
 │   │   ├── subscription_pipeline.py
 │   │   ├── subscription_sync.py
 │   │   ├── transaction_store.py    # Local txn table + Plaid /transactions/sync cursor
+│   │   ├── job_queue.py            # Shared arq enqueue helper (webhook + manual sync)
 │   │   ├── alert_service.py
 │   │   ├── email.py                # Resend integration
 │   │   └── webhook_verification.py
-│   ├── tests/                      # 450 tests, runs against in-memory SQLite
+│   ├── tests/                      # 466 tests, runs against in-memory SQLite
 │   └── alembic/versions/
 └── frontend/
     ├── nginx.conf
@@ -71,7 +72,7 @@ SubsTrack/
 
 ### Dashboard
 - **Stat cards** — Monthly Spend, Annual Estimate (all frequencies), Subscription count
-- **Monthly spending chart** — bar chart of transaction spend over time
+- **Monthly spending chart** — bar chart of actual subscription charges over time, matched by merchant + amount + linked account so it tracks the same spend the stat cards project (not every dollar that left the account)
 - **Category breakdown** — horizontal bar chart, monthly equivalent per category
 - **Due Soon** — subscriptions renewing within 7 days, urgent highlighting for today/tomorrow
 - **Manual subscriptions** — add, edit, and delete without a bank connection
@@ -80,6 +81,7 @@ SubsTrack/
 - Plaid bank link to auto-detect recurring charges
 - Subscription pipeline with confidence scoring and frequency inference (weekly / biweekly / monthly / quarterly / yearly)
 - Source badge (Bank vs Manual) and detection metadata
+- **Background sync** — the manual "Sync" button and Plaid webhooks both enqueue the same durable arq job per linked account instead of blocking the request; the frontend polls `GET /subscriptions/sync/status` for completion, so large accounts or multiple linked banks don't risk a gateway timeout
 
 #### Detection pipeline details
 - **Amount clustering** — multi-product merchants split into separate subscriptions by amount proximity
@@ -200,7 +202,7 @@ Every push to `master` runs:
 
 1. **Ruff** — Python linting
 2. **Bandit** — Python security scan
-3. **Pytest** — 450 backend tests (in-memory SQLite, mocked Redis + Plaid)
+3. **Pytest** — 466 backend tests (in-memory SQLite, mocked Redis + Plaid)
 4. **Vitest** — Frontend unit tests
 5. **Vite build** — Production build verification
 6. **SSH deploy** — Pull, rebuild containers, run Alembic migrations (only on `master` push, all jobs must pass)
