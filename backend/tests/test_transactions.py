@@ -467,47 +467,78 @@ def _netflix_sync_txns():
 
 
 class TestSyncSubscriptions:
-    async def test_sync_detects_and_saves_subscriptions(self, auth_client, test_account, db, test_user):
+    """POST enqueues a durable job per linked account and returns immediately
+    (fixed a Cloudflare 524: doing the Plaid pull + AI detection inline could
+    run past the edge timeout). `run_item_sync` simulates the arq worker
+    picking up that job; GET /subscriptions/sync/status is how the frontend
+    polls for the result."""
+
+    async def test_sync_enqueues_and_marks_accounts_syncing(self, auth_client, test_account, db):
+        r = await auth_client.post("/api/subscriptions/sync")
+        assert r.status_code == 202
+        assert r.json()["status"] == "syncing"
+        await db.refresh(test_account)
+        assert test_account.sync_status == "syncing"
+
+    async def test_status_reports_syncing_until_job_runs(self, auth_client, test_account, run_item_sync):
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.return_value = _plaid_sync_response()
+            await auth_client.post("/api/subscriptions/sync")
+
+            mid = await auth_client.get("/api/subscriptions/sync/status")
+            assert mid.json()["syncing"] is True
+
+            await run_item_sync(test_account.item_id)
+
+        done = await auth_client.get("/api/subscriptions/sync/status")
+        assert done.json()["syncing"] is False
+
+    async def test_sync_detects_and_saves_subscriptions(self, auth_client, test_account, db, test_user, run_item_sync):
         """Pipeline should detect Netflix as a subscription and persist it."""
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
-        subs = r.json()["subscriptions"]
+        status = await auth_client.get("/api/subscriptions/sync/status")
+        assert status.status_code == 200
+        subs = status.json()["subscriptions"]
         assert any(s["merchant"] == "Netflix" for s in subs)
 
     async def test_sync_attributes_subscription_to_linked_account(
-        self, auth_client, test_account, db, test_user
+        self, auth_client, test_account, db, test_user, run_item_sync
     ):
         """Detected subscriptions record which bank produced them (for scoped unlink)."""
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         from sqlalchemy import select
         sub = (await db.execute(
             select(Subscription).where(Subscription.merchant == "Netflix")
         )).scalars().one()
         assert sub.linked_account_id == test_account.id
 
-    async def test_sync_persists_transactions_and_cursor(self, auth_client, test_account, db, test_user):
+    async def test_sync_persists_transactions_and_cursor(self, auth_client, test_account, db, test_user, run_item_sync):
         """Synced transactions land in the local table and the cursor is stored."""
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(
                 added=_netflix_sync_txns(), cursor="cursor-after-sync",
             )
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         from sqlalchemy import select
         rows = (await db.execute(select(Transaction))).scalars().all()
         assert len(rows) == 3
         await db.refresh(test_account)
         assert test_account.sync_cursor == "cursor-after-sync"
 
-    async def test_sync_paginates_until_has_more_is_false(self, auth_client, test_account, db):
+    async def test_sync_paginates_until_has_more_is_false(self, auth_client, test_account, db, run_item_sync):
         page1 = _plaid_sync_response(
             added=[_make_plaid_txn("SPOTIFY", 9.99, _days_ago(40), txn_id="txn-s1")],
             has_more=True, cursor="cursor-mid",
@@ -519,8 +550,9 @@ class TestSyncSubscriptions:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.side_effect = [page1, page2]
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         assert mock_plaid.transactions_sync.call_count == 2
         from sqlalchemy import select
         rows = (await db.execute(select(Transaction))).scalars().all()
@@ -528,16 +560,17 @@ class TestSyncSubscriptions:
         await db.refresh(test_account)
         assert test_account.sync_cursor == "cursor-end"
 
-    async def test_sync_covers_all_linked_accounts(self, auth_client, test_account, db, test_user):
+    async def test_sync_covers_all_linked_accounts(self, auth_client, test_account, db, test_user, run_item_sync):
         """Every linked bank gets its own cursor sync."""
         from db.models import LinkedAccount
         from services.encryption import encrypt
-        db.add(LinkedAccount(
+        second = LinkedAccount(
             user_id=test_user.id,
             access_token=encrypt("access-sandbox-second-token"),
             item_id="item-sandbox-test-002",
             institution_name="Second Bank",
-        ))
+        )
+        db.add(second)
         await db.flush()
 
         with patch("services.plaid_service.client") as mock_plaid:
@@ -546,14 +579,16 @@ class TestSyncSubscriptions:
                 _plaid_sync_response(added=[_make_plaid_txn("SPOTIFY", 9.99, _days_ago(20), txn_id="txn-sp1")]),
             ]
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
+            await run_item_sync(second.item_id)
 
-        assert r.status_code == 200
         assert mock_plaid.transactions_sync.call_count == 2
         from sqlalchemy import select
         merchants = {t.merchant_name for t in (await db.execute(select(Transaction))).scalars()}
         assert merchants == {"NETFLIX", "SPOTIFY"}
 
-    async def test_sync_upserts_existing(self, auth_client, test_account, db, test_user):
+    async def test_sync_upserts_existing(self, auth_client, test_account, db, test_user, run_item_sync):
         """Re-sync updates amount/frequency of existing plaid subscriptions."""
         existing = Subscription(
             user_id=test_user.id, merchant="Netflix",
@@ -565,12 +600,14 @@ class TestSyncSubscriptions:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
-        updated = next(s for s in r.json()["subscriptions"] if s["merchant"] == "Netflix")
+        status = await auth_client.get("/api/subscriptions/sync/status")
+        updated = next(s for s in status.json()["subscriptions"] if s["merchant"] == "Netflix")
         assert updated["amount"] == 15.99  # amount was updated
 
-    async def test_sync_skips_inactive_subscriptions(self, auth_client, test_account, db, test_user):
+    async def test_sync_skips_inactive_subscriptions(self, auth_client, test_account, db, test_user, run_item_sync):
         """If a user manually deactivated a sub, sync should not re-activate it."""
         cancelled = Subscription(
             user_id=test_user.id, merchant="Netflix",
@@ -582,16 +619,18 @@ class TestSyncSubscriptions:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=_netflix_sync_txns())
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
-        subs = r.json()["subscriptions"]
+        status = await auth_client.get("/api/subscriptions/sync/status")
+        subs = status.json()["subscriptions"]
         assert all(s["merchant"] != "Netflix" for s in subs)  # still hidden
 
-    async def test_sync_login_required_returns_409_and_marks_account(
-        self, auth_client, test_account, db
+    async def test_sync_login_required_marks_account_and_reports_reconnect(
+        self, auth_client, test_account, db, run_item_sync
     ):
-        """A broken bank connection is a 409 naming the bank, not a 500 —
-        and the account is flagged so Settings shows Reconnect."""
+        """A broken bank connection doesn't crash the job — the account is
+        flagged so Settings shows Reconnect, and the status poll names it."""
         import json as _json
 
         from plaid.exceptions import ApiException
@@ -601,13 +640,35 @@ class TestSyncSubscriptions:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.side_effect = exc
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 409
-        detail = r.json()["detail"]
-        assert "Test Bank" in detail
-        assert "reconnect" in detail.lower()
         await db.refresh(test_account)
         assert test_account.status == "login_required"
+        assert test_account.sync_status == "idle"
+
+        status = await auth_client.get("/api/subscriptions/sync/status")
+        assert status.status_code == 200
+        body = status.json()
+        assert body["syncing"] is False
+        assert "Test Bank" in body["reconnect_needed"]
+
+    async def test_sync_unexpected_failure_reported_as_sync_error(
+        self, auth_client, test_account, db, run_item_sync
+    ):
+        """An unexpected exception in the job doesn't propagate — it's surfaced
+        via the status poll instead of a 500 on the (already-returned) POST."""
+        with patch("services.plaid_service.client") as mock_plaid:
+            mock_plaid.transactions_sync.side_effect = RuntimeError("boom")
+            r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
+
+        await db.refresh(test_account)
+        assert test_account.sync_status == "error"
+
+        status = await auth_client.get("/api/subscriptions/sync/status")
+        assert status.json()["sync_error"] is True
 
     async def test_sync_requires_bank_account(self, auth_client):
         r = await auth_client.post("/api/subscriptions/sync")
@@ -618,11 +679,29 @@ class TestSyncSubscriptions:
         assert r.status_code == 401
 
 
+class TestSyncStatus:
+    async def test_status_requires_bank_account(self, auth_client):
+        r = await auth_client.get("/api/subscriptions/sync/status")
+        assert r.status_code == 400
+
+    async def test_status_unauthenticated(self, client):
+        r = await client.get("/api/subscriptions/sync/status")
+        assert r.status_code == 401
+
+    async def test_status_idle_when_nothing_syncing(self, auth_client, test_account):
+        r = await auth_client.get("/api/subscriptions/sync/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["syncing"] is False
+        assert body["reconnect_needed"] == []
+        assert body["sync_error"] is False
+
+
 # ─── Subscription identity across price changes (merchant_key) ──────────────
 
 class TestSubscriptionIdentity:
     async def test_price_change_updates_row_instead_of_duplicating(
-        self, auth_client, test_account, db, test_user
+        self, auth_client, test_account, db, test_user, run_item_sync
     ):
         """A legacy amount-labeled row must be matched by key when the price
         drifts, not duplicated by the new label."""
@@ -645,8 +724,9 @@ class TestSubscriptionIdentity:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         from sqlalchemy import select
         rows = (await db.execute(
             select(Subscription).where(
@@ -660,7 +740,7 @@ class TestSubscriptionIdentity:
         assert rows[0].merchant == "Netflix"  # label refreshed
 
     async def test_distinct_plans_stay_separate_rows(
-        self, auth_client, test_account, db, test_user
+        self, auth_client, test_account, db, test_user, run_item_sync
     ):
         """Two price tiers of one merchant (beyond the match tolerance) must
         remain two subscriptions."""
@@ -674,8 +754,9 @@ class TestSubscriptionIdentity:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         from sqlalchemy import select
         rows = (await db.execute(
             select(Subscription).where(
@@ -687,7 +768,7 @@ class TestSubscriptionIdentity:
         assert {float(r.amount) for r in rows} == {9.99, 19.99}
 
     async def test_resync_of_two_plans_does_not_cross_match(
-        self, auth_client, test_account, db, test_user
+        self, auth_client, test_account, db, test_user, run_item_sync
     ):
         """Re-syncing the same two plans updates each row, never merges them."""
         txns = [
@@ -700,10 +781,13 @@ class TestSubscriptionIdentity:
         with patch("services.plaid_service.client") as mock_plaid:
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(added=txns)
             await auth_client.post("/api/subscriptions/sync")
+            await run_item_sync(test_account.item_id)
+
             mock_plaid.transactions_sync.return_value = _plaid_sync_response(cursor="c2")
             r = await auth_client.post("/api/subscriptions/sync")
+            assert r.status_code == 202
+            await run_item_sync(test_account.item_id)
 
-        assert r.status_code == 200
         from sqlalchemy import select
         rows = (await db.execute(
             select(Subscription).where(Subscription.merchant_key == "spotify")

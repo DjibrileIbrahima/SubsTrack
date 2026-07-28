@@ -83,8 +83,13 @@ export const resetPassword = (token, password) =>
 export const getSavedSubscriptions = () =>
   api.get('/subscriptions/saved').then(r => r.data)
 
+// Kicks off a durable background sync and returns immediately — poll
+// getSyncStatus() for completion instead of awaiting the sync itself.
 export const syncSubscriptions = () =>
   api.post('/subscriptions/sync').then(r => r.data)
+
+export const getSyncStatus = () =>
+  api.get('/subscriptions/sync/status').then(r => r.data)
 
 export const addManualSubscription = (data) =>
   api.post('/subscriptions/manual', data).then(r => r.data)

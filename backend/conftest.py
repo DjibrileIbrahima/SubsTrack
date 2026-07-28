@@ -166,6 +166,28 @@ async def test_subscription(db, test_user):
 
 
 @pytest_asyncio.fixture
+def run_item_sync(db):
+    """Directly execute the durable sync job for one linked account, simulating
+    the arq worker picking up a job enqueued by POST /subscriptions/sync or a
+    webhook — against the SAME test session/DB the HTTP client uses, so writes
+    are visible to subsequent requests in the test without a second engine."""
+
+    class _SameSessionCM:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _run(item_id: str) -> None:
+        from services.subscription_sync import sync_subscriptions_for_item
+        with patch("db.database.AsyncSessionLocal", lambda: _SameSessionCM()):
+            await sync_subscriptions_for_item(item_id)
+
+    return _run
+
+
+@pytest_asyncio.fixture
 async def test_account(db, test_user):
     account = LinkedAccount(
         user_id=test_user.id,
@@ -191,7 +213,13 @@ def mock_send_email():
 
 @pytest.fixture(autouse=True)
 def mock_enqueue_item_sync():
-    """Stub the arq enqueue so webhook tests never open a real Redis connection.
-    Tests that assert on enqueue behaviour receive this mock."""
-    with patch("routes.webhooks.enqueue_item_sync", new_callable=AsyncMock) as m:
-        yield m
+    """Stub the arq enqueue so tests never open a real Redis connection.
+
+    Both routes.webhooks and routes.transactions import enqueue_item_sync by
+    name, so each holds its own binding — patch both to the same mock so
+    either call site is intercepted and tests can assert on either.
+    """
+    mock = AsyncMock()
+    with patch("routes.webhooks.enqueue_item_sync", mock), \
+            patch("routes.transactions.enqueue_item_sync", mock):
+        yield mock

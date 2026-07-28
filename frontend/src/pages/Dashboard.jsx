@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getSavedSubscriptions, syncSubscriptions, getSummary, getAccounts } from '../api'
+import { getSavedSubscriptions, syncSubscriptions, getSyncStatus, getSummary, getAccounts } from '../api'
 import { usePlaid } from '../hooks/usePlaid'
 import SubscriptionList from '../components/SubscriptionList'
 import AddManualForm from '../components/AddManualForm'
@@ -19,6 +19,14 @@ function getDueSoon(subs) {
     .filter(s => s.next_expected && s.next_expected >= todayStr && s.next_expected <= cutoffStr)
     .sort((a, b) => a.next_expected.localeCompare(b.next_expected))
 }
+
+// The sync itself runs on a background worker (see backend/services/job_queue.py) —
+// doing it inline used to trip Cloudflare's edge timeout on accounts with a lot of
+// history. Poll for completion instead of awaiting one long request.
+const SYNC_POLL_INTERVAL_MS = 1500
+const SYNC_POLL_MAX_ATTEMPTS = 40 // ~1 minute safety cap; a normal sync finishes well before this
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 function daysLabel(dateStr) {
   const today = new Date()
@@ -73,16 +81,32 @@ export default function Dashboard() {
     setError('')
 
     try {
-      const data = await syncSubscriptions()
+      await syncSubscriptions()
+
+      let data = { syncing: true }
+      for (let attempt = 0; data.syncing && attempt < SYNC_POLL_MAX_ATTEMPTS; attempt++) {
+        await sleep(SYNC_POLL_INTERVAL_MS)
+        data = await getSyncStatus()
+      }
+
       setSubs(data.subscriptions || [])
       setMonthlyTotal(data.total_monthly_spend || 0)
       setAnnualEstimate(data.annual_estimate || 0)
+
+      if (data.syncing) {
+        setError('Sync is taking longer than expected — check back soon.')
+      } else if (data.reconnect_needed?.length) {
+        setError(
+          `${data.reconnect_needed[0]} needs to be reconnected — open Settings, use the Reconnect button next to the bank, then sync again.`
+        )
+      } else if (data.sync_error) {
+        setError('Failed to sync subscriptions.')
+      }
 
       const refreshedSummary = await getSummary().catch(() => [])
       setSummary(refreshedSummary || [])
     } catch (e) {
       console.error('Sync failed:', e)
-      // 409 = bank needs re-authentication; show the backend's instructions
       setError(e.response?.data?.detail || 'Failed to sync subscriptions.')
     } finally {
       setSyncing(false)

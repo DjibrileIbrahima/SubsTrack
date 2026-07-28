@@ -40,6 +40,7 @@ import api, {
   updateMe,
   getSavedSubscriptions,
   syncSubscriptions,
+  getSyncStatus,
   addManualSubscription,
   deleteSubscription,
   getSummary,
@@ -108,6 +109,16 @@ describe('syncSubscriptions', () => {
     mockInstance.post.mockResolvedValue({ data })
     const result = await syncSubscriptions()
     expect(mockInstance.post).toHaveBeenCalledWith('/subscriptions/sync')
+    expect(result).toEqual(data)
+  })
+})
+
+describe('getSyncStatus', () => {
+  it('calls GET /subscriptions/sync/status and returns data', async () => {
+    const data = { syncing: false, subscriptions: [], reconnect_needed: [], sync_error: false }
+    mockInstance.get.mockResolvedValue({ data })
+    const result = await getSyncStatus()
+    expect(mockInstance.get).toHaveBeenCalledWith('/subscriptions/sync/status')
     expect(result).toEqual(data)
   })
 })
