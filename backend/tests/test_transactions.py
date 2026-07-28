@@ -971,6 +971,55 @@ class TestGetSummary:
         assert abs(totals.get(recent_month, 0) - 9.99) < 0.01
         assert older_month not in totals or totals[older_month] == 0  # stale tier excluded
 
+    async def test_scopes_match_to_the_subscriptions_own_linked_account(
+        self, auth_client, test_account, db, test_user
+    ):
+        """A similar-looking charge on a DIFFERENT linked account must not
+        also count — only one account's history backs the active subscription,
+        so counting every account with a matching merchant+amount multiplies
+        the total by however many accounts happen to share that pattern."""
+        from db.models import LinkedAccount
+        from services.encryption import encrypt
+        other_account = LinkedAccount(
+            user_id=test_user.id,
+            access_token=encrypt("access-sandbox-other-token"),
+            item_id="item-sandbox-other",
+            institution_name="Other Bank",
+        )
+        db.add(other_account)
+        await db.flush()
+
+        db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
+                            amount=15.99, frequency="monthly", source="plaid",
+                            linked_account_id=test_account.id))
+        db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
+        db.add(_make_txn_row(test_user.id, other_account.id, "NETFLIX", 15.99, days_back=10))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        entry = next(s for s in r.json()["monthly_summary"] if s["month"] == month)
+        assert abs(entry["total"] - 15.99) < 0.01  # only test_account's charge counted
+
+    async def test_legacy_subscription_without_linked_account_matches_any_account(
+        self, auth_client, test_account, db, test_user
+    ):
+        """A subscription with no linked_account_id (manual, or a legacy
+        pre-attribution row) can't be scoped to one account — fall back to
+        matching on any account rather than dropping it entirely."""
+        db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
+                            amount=15.99, frequency="monthly", source="plaid",
+                            linked_account_id=None))
+        db.add(_make_txn_row(test_user.id, test_account.id, "NETFLIX", 15.99, days_back=10))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        entry = next(s for s in r.json()["monthly_summary"] if s["month"] == month)
+        assert abs(entry["total"] - 15.99) < 0.01
+
     async def test_ignores_negative_amounts(self, auth_client, test_account, db, test_user):
         """Negative transactions (refunds) should be excluded from summary."""
         db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",

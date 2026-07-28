@@ -176,28 +176,46 @@ async def get_spending_summary(
     """Monthly spend attributable to the user's active subscriptions.
 
     Filtered to transactions that plausibly ARE one of those subscriptions'
-    charges — same merchant (the normalization used at detection time) AND a
-    similar amount — so this chart tracks the same thing Monthly Spend/Annual
-    Est. project, instead of every dollar that left the account. Merchant
-    alone is too loose: broad aliases (e.g. "APPLE" matches any Apple
-    purchase) would pull in unrelated one-off purchases, and a stale,
-    now-inactive price tier shares its merchant_key with the active one.
+    charges — same linked account, same merchant (the normalization used at
+    detection time), AND a similar amount — so this chart tracks the same
+    thing Monthly Spend/Annual Est. project, instead of every dollar that
+    left the account. Merchant+amount alone is still too loose across
+    multiple linked banks: if more than one account happens to show a
+    similar-looking charge (e.g. detection ran independently per account),
+    only one became "the" active subscription row, but every matching
+    account's transactions would keep counting without scoping to the
+    subscription's own linked_account_id — multiplying the total by however
+    many accounts share that merchant+amount pattern.
     """
     await get_linked_accounts(current_user, db)
     try:
         sub_result = await db.execute(
-            select(Subscription.merchant_key, Subscription.merchant, Subscription.amount).where(
+            select(
+                Subscription.merchant_key, Subscription.merchant,
+                Subscription.amount, Subscription.linked_account_id,
+            ).where(
                 Subscription.user_id == current_user.id,
                 Subscription.is_active == True,  # noqa: E712
             )
         )
-        subscription_amounts_by_key: dict[str, list[float]] = {}
-        for key, merchant, amount in sub_result.all():
-            subscription_amounts_by_key.setdefault((key or merchant).lower(), []).append(float(amount))
+        # Scoped to the subscription's own account when known; subscriptions
+        # without one (manual, or legacy pre-attribution rows) fall back to
+        # matching on any account since we can't narrow further.
+        scoped_amounts: dict = {}
+        unscoped_amounts: dict[str, list[float]] = {}
+        for key, merchant, amount, linked_account_id in sub_result.all():
+            norm_key = (key or merchant).lower()
+            if linked_account_id is not None:
+                scoped_amounts.setdefault(linked_account_id, {}).setdefault(norm_key, []).append(float(amount))
+            else:
+                unscoped_amounts.setdefault(norm_key, []).append(float(amount))
 
         cutoff = date.today() - timedelta(days=180)
         result = await db.execute(
-            select(Transaction.date, Transaction.amount, Transaction.merchant_name, Transaction.name).where(
+            select(
+                Transaction.date, Transaction.amount, Transaction.merchant_name,
+                Transaction.name, Transaction.linked_account_id,
+            ).where(
                 Transaction.user_id == current_user.id,
                 Transaction.date >= cutoff,
                 Transaction.amount > 0,  # positive = money out (Plaid convention)
@@ -205,9 +223,9 @@ async def get_spending_summary(
         )
 
         monthly: dict[str, float] = {}
-        for txn_date, amount, merchant_name, name in result.all():
+        for txn_date, amount, merchant_name, name, linked_account_id in result.all():
             key = normalize_merchant({"merchant_name": merchant_name, "name": name}).lower()
-            candidate_amounts = subscription_amounts_by_key.get(key)
+            candidate_amounts = scoped_amounts.get(linked_account_id, {}).get(key) or unscoped_amounts.get(key)
             if not candidate_amounts:
                 continue
             if not any(amount_diff(float(amount), a) <= AMOUNT_MATCH_TOLERANCE for a in candidate_amounts):
