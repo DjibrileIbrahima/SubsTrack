@@ -15,7 +15,7 @@ from db.models import LinkedAccount, Subscription, Transaction, User
 from limiter import limiter
 from services.job_queue import enqueue_item_sync
 from services.subscription_detector import normalize_merchant
-from services.subscription_sync import to_money
+from services.subscription_sync import AMOUNT_MATCH_TOLERANCE, amount_diff, to_money
 from services.transaction_store import get_user_transactions, serialize_transaction
 
 router = APIRouter()
@@ -175,21 +175,25 @@ async def get_spending_summary(
 ):
     """Monthly spend attributable to the user's active subscriptions.
 
-    Filtered to transactions whose normalized merchant matches an active
-    subscription (the same normalization used at detection time) so this
-    chart tracks the same thing Monthly Spend/Annual Est. project, instead
-    of every dollar that left the account — a one-off purchase used to spike
-    a month's bar with no relation to either stat card.
+    Filtered to transactions that plausibly ARE one of those subscriptions'
+    charges — same merchant (the normalization used at detection time) AND a
+    similar amount — so this chart tracks the same thing Monthly Spend/Annual
+    Est. project, instead of every dollar that left the account. Merchant
+    alone is too loose: broad aliases (e.g. "APPLE" matches any Apple
+    purchase) would pull in unrelated one-off purchases, and a stale,
+    now-inactive price tier shares its merchant_key with the active one.
     """
     await get_linked_accounts(current_user, db)
     try:
         sub_result = await db.execute(
-            select(Subscription.merchant_key, Subscription.merchant).where(
+            select(Subscription.merchant_key, Subscription.merchant, Subscription.amount).where(
                 Subscription.user_id == current_user.id,
                 Subscription.is_active == True,  # noqa: E712
             )
         )
-        subscription_keys = {(key or merchant).lower() for key, merchant in sub_result.all()}
+        subscription_amounts_by_key: dict[str, list[float]] = {}
+        for key, merchant, amount in sub_result.all():
+            subscription_amounts_by_key.setdefault((key or merchant).lower(), []).append(float(amount))
 
         cutoff = date.today() - timedelta(days=180)
         result = await db.execute(
@@ -203,7 +207,10 @@ async def get_spending_summary(
         monthly: dict[str, float] = {}
         for txn_date, amount, merchant_name, name in result.all():
             key = normalize_merchant({"merchant_name": merchant_name, "name": name}).lower()
-            if key not in subscription_keys:
+            candidate_amounts = subscription_amounts_by_key.get(key)
+            if not candidate_amounts:
+                continue
+            if not any(amount_diff(float(amount), a) <= AMOUNT_MATCH_TOLERANCE for a in candidate_amounts):
                 continue
             month = txn_date.isoformat()[:7]
             monthly[month] = monthly.get(month, 0) + float(amount)
