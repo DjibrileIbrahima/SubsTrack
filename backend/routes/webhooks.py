@@ -2,8 +2,6 @@ import json
 import logging
 import os
 
-from arq import create_pool
-from arq.connections import RedisSettings
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import LinkedAccount
 from limiter import limiter
+from services.job_queue import enqueue_item_sync
 from services.webhook_verification import verify_plaid_webhook
 
 router = APIRouter()
@@ -20,23 +19,6 @@ logger = logging.getLogger(__name__)
 # default; a missing signature is rejected unless this flag is explicitly set for
 # local development (Plaid's sandbox tester cannot sign requests).
 _ALLOW_UNVERIFIED_WEBHOOKS = os.getenv("PLAID_ALLOW_UNVERIFIED_WEBHOOKS", "false").lower() == "true"
-
-_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-_arq_pool = None
-
-
-async def enqueue_item_sync(item_id: str) -> None:
-    """Enqueue a durable transaction sync on the arq worker.
-
-    Replaces in-process BackgroundTasks so a sync survives a web-process restart:
-    the job lives in Redis and is retried on failure. The _job_id makes it
-    idempotent — a burst of webhooks for the same item collapses into one queued
-    job while the first is still pending or running.
-    """
-    global _arq_pool
-    if _arq_pool is None:
-        _arq_pool = await create_pool(RedisSettings.from_dsn(_REDIS_URL))
-    await _arq_pool.enqueue_job("sync_item_job", item_id, _job_id=f"sync:{item_id}")
 
 # All of these mean "new data is available via /transactions/sync" — including
 # TRANSACTIONS_REMOVED, since the sync cursor also delivers removals.

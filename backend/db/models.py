@@ -57,6 +57,11 @@ class LinkedAccount(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
     # Plaid /transactions/sync cursor — None means no sync has completed yet
     sync_cursor: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # "idle" | "syncing" | "error" — durable-job state, distinct from `status`
+    # (which tracks the bank connection itself). Lets the manual sync button
+    # poll for completion instead of blocking the request on Plaid + AI calls.
+    sync_status: Mapped[str] = mapped_column(String(16), nullable=False, default="idle", server_default="idle")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     linked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="accounts")

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -181,21 +182,26 @@ async def upsert_detected_subscriptions(
 async def sync_subscriptions_for_item(item_id: str) -> None:
     """Pull incremental Plaid updates and upsert subscriptions for a linked account.
 
-    Designed to run as a FastAPI BackgroundTask — creates its own DB session and
-    swallows all exceptions so a failure never surfaces to the caller.
+    Runs as a durable arq job (enqueued by both the Plaid webhook route and the
+    manual sync button) — creates its own DB session and swallows all
+    exceptions so a failure never surfaces to the caller. sync_status tracks
+    progress so callers can poll for completion instead of blocking on it.
     """
     from db.database import AsyncSessionLocal  # local import avoids circular deps
 
-    try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(LinkedAccount).where(LinkedAccount.item_id == item_id)
-            )
-            account = result.scalars().first()
-            if not account:
-                logger.warning("Webhook sync: no account found for item_id=%s", item_id)
-                return
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(LinkedAccount).where(LinkedAccount.item_id == item_id)
+        )
+        account = result.scalars().first()
+        if not account:
+            logger.warning("Webhook sync: no account found for item_id=%s", item_id)
+            return
 
+        account.sync_status = "syncing"
+        await db.commit()
+
+        try:
             await sync_account_transactions(db, account)
             rows = await get_account_transactions(db, account.id, DETECTION_WINDOW_DAYS)
             detected = await detect_from_transactions(to_detection_dicts(rows))
@@ -203,18 +209,26 @@ async def sync_subscriptions_for_item(item_id: str) -> None:
                 db, account.user_id, detected, linked_account_id=account.id
             )
 
+            account.sync_status = "idle"
+            account.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+            await db.commit()
+
             logger.info(
                 "Webhook sync complete for item_id=%s: %d subscriptions processed",
                 item_id, len(detected),
             )
 
-    except ItemReauthRequired:
-        # Expected state, not a bug: account already marked login_required so
-        # the UI surfaces the Reconnect flow. No stack trace needed.
-        logger.warning("Webhook sync: item %s needs re-authentication", item_id)
-    except Exception as exc:
-        code = plaid_error_code_from_exception(exc)
-        logger.exception(
-            "Webhook sync failed for item_id=%s", item_id,
-            extra={"plaid_error_code": code} if code else None,
-        )
+        except ItemReauthRequired:
+            # Expected state, not a bug: account already marked login_required so
+            # the UI surfaces the Reconnect flow. No stack trace needed.
+            account.sync_status = "idle"
+            await db.commit()
+            logger.warning("Webhook sync: item %s needs re-authentication", item_id)
+        except Exception as exc:
+            account.sync_status = "error"
+            await db.commit()
+            code = plaid_error_code_from_exception(exc)
+            logger.exception(
+                "Webhook sync failed for item_id=%s", item_id,
+                extra={"plaid_error_code": code} if code else None,
+            )

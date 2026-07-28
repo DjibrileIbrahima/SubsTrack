@@ -14,6 +14,7 @@ import Dashboard from './Dashboard'
 vi.mock('../api', () => ({
   getSavedSubscriptions: vi.fn(),
   syncSubscriptions: vi.fn(),
+  getSyncStatus: vi.fn(),
   getSummary: vi.fn(),
   getAccounts: vi.fn(),
 }))
@@ -46,7 +47,7 @@ vi.mock('../components/AddManualForm', () => ({
   ),
 }))
 
-import { getSavedSubscriptions, syncSubscriptions, getSummary, getAccounts } from '../api'
+import { getSavedSubscriptions, syncSubscriptions, getSyncStatus, getSummary, getAccounts } from '../api'
 import { usePlaid } from '../hooks/usePlaid'
 
 const localDateStr = (d) =>
@@ -196,8 +197,22 @@ describe('Dashboard — Add manually', () => {
 })
 
 describe('Dashboard — sync', () => {
-  it('calls syncSubscriptions when sync button clicked', async () => {
-    syncSubscriptions.mockResolvedValue({ subscriptions: MOCK_SUBS, total_monthly_spend: 25.98, annual_estimate: 311.76 })
+  // The sync itself now runs on a background job (see Dashboard.jsx's
+  // SYNC_POLL_INTERVAL_MS) — the button click resolves quickly, then the
+  // component polls getSyncStatus. These tests use real timers with a
+  // generous waitFor timeout rather than faking the poll interval, since
+  // userEvent + fake timers is fragile in this setup.
+
+  it('calls syncSubscriptions then polls getSyncStatus until done', async () => {
+    syncSubscriptions.mockResolvedValue({ status: 'syncing' })
+    getSyncStatus.mockResolvedValue({
+      syncing: false,
+      subscriptions: MOCK_SUBS,
+      total_monthly_spend: 25.98,
+      annual_estimate: 311.76,
+      reconnect_needed: [],
+      sync_error: false,
+    })
     getSummary.mockResolvedValue([])
     setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
 
@@ -206,9 +221,32 @@ describe('Dashboard — sync', () => {
     await userEvent.click(screen.getByRole('button', { name: /sync/i }))
 
     await waitFor(() => expect(syncSubscriptions).toHaveBeenCalled())
+    await waitFor(() => expect(getSyncStatus).toHaveBeenCalled(), { timeout: 5000 })
   })
 
-  it('shows error when sync fails', async () => {
+  it('keeps polling while the job is still running', async () => {
+    syncSubscriptions.mockResolvedValue({ status: 'syncing' })
+    getSyncStatus
+      .mockResolvedValueOnce({ syncing: true })
+      .mockResolvedValueOnce({
+        syncing: false,
+        subscriptions: MOCK_SUBS,
+        total_monthly_spend: 25.98,
+        annual_estimate: 311.76,
+        reconnect_needed: [],
+        sync_error: false,
+      })
+    getSummary.mockResolvedValue([])
+    setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
+
+    render(<Dashboard />)
+    await waitFor(() => screen.getByRole('button', { name: /sync/i }))
+    await userEvent.click(screen.getByRole('button', { name: /sync/i }))
+
+    await waitFor(() => expect(getSyncStatus).toHaveBeenCalledTimes(2), { timeout: 8000 })
+  }, 10000)
+
+  it('shows error when the sync request itself fails', async () => {
     syncSubscriptions.mockRejectedValue(new Error('Plaid error'))
     setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
 
@@ -221,19 +259,50 @@ describe('Dashboard — sync', () => {
     })
   })
 
-  it('shows the backend detail when sync fails with instructions (409 reconnect)', async () => {
-    syncSubscriptions.mockRejectedValue({
-      response: { data: { detail: 'Test Bank needs to be reconnected — open Settings, use the Reconnect button next to the bank, then sync again.' } },
+  it('shows the reconnect instructions once the background job flags a broken bank connection', async () => {
+    syncSubscriptions.mockResolvedValue({ status: 'syncing' })
+    getSyncStatus.mockResolvedValue({
+      syncing: false,
+      subscriptions: [],
+      total_monthly_spend: 0,
+      annual_estimate: 0,
+      reconnect_needed: ['Test Bank'],
+      sync_error: false,
     })
+    getSummary.mockResolvedValue([])
     setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
 
     render(<Dashboard />)
     await waitFor(() => screen.getByRole('button', { name: /sync/i }))
     await userEvent.click(screen.getByRole('button', { name: /sync/i }))
 
-    await waitFor(() => {
-      expect(screen.getByText(/Test Bank needs to be reconnected/i)).toBeInTheDocument()
+    await waitFor(
+      () => expect(screen.getByText(/Test Bank needs to be reconnected/i)).toBeInTheDocument(),
+      { timeout: 5000 }
+    )
+  })
+
+  it('shows a generic error when the background job fails', async () => {
+    syncSubscriptions.mockResolvedValue({ status: 'syncing' })
+    getSyncStatus.mockResolvedValue({
+      syncing: false,
+      subscriptions: [],
+      total_monthly_spend: 0,
+      annual_estimate: 0,
+      reconnect_needed: [],
+      sync_error: true,
     })
+    getSummary.mockResolvedValue([])
+    setupDefaultMocks({ accounts: [{ id: 'acc-1' }] })
+
+    render(<Dashboard />)
+    await waitFor(() => screen.getByRole('button', { name: /sync/i }))
+    await userEvent.click(screen.getByRole('button', { name: /sync/i }))
+
+    await waitFor(
+      () => expect(screen.getByText(/failed to sync/i)).toBeInTheDocument(),
+      { timeout: 5000 }
+    )
   })
 })
 

@@ -13,21 +13,9 @@ from db.database import get_db
 from db.deps import get_current_user
 from db.models import LinkedAccount, Subscription, Transaction, User
 from limiter import limiter
-from services.plaid_service import plaid_error_code_from_exception
-from services.subscription_sync import (
-    DETECTION_WINDOW_DAYS,
-    detect_from_transactions,
-    to_money,
-    upsert_detected_subscriptions,
-)
-from services.transaction_store import (
-    ItemReauthRequired,
-    get_account_transactions,
-    get_user_transactions,
-    serialize_transaction,
-    sync_account_transactions,
-    to_detection_dicts,
-)
+from services.job_queue import enqueue_item_sync
+from services.subscription_sync import to_money
+from services.transaction_store import get_user_transactions, serialize_transaction
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -133,46 +121,50 @@ async def get_saved_subscriptions(
         raise HTTPException(status_code=500, detail="Failed to fetch subscriptions")
 
 
-@router.post("/subscriptions/sync")
+@router.post("/subscriptions/sync", status_code=202)
 @limiter.limit("10/minute")
 async def sync_subscriptions(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Sync subscriptions from Plaid and update DB. POST because it writes.
+    """Kick off a durable sync for every linked account and return immediately.
 
-    Detection runs per linked account so each subscription is attributed to
-    the bank whose transactions produced it.
+    The actual Plaid pull + AI detection runs on the arq worker (the same job
+    the webhook path uses) — doing that inline here, sequentially across every
+    linked account, was slow enough to trip Cloudflare's edge timeout on
+    accounts with a lot of history or more than one linked bank. The frontend
+    polls GET /subscriptions/sync/status for completion.
     """
     accounts = await get_linked_accounts(current_user, db)
-    try:
-        for account in accounts:
-            await sync_account_transactions(db, account)
-            rows = await get_account_transactions(db, account.id, DETECTION_WINDOW_DAYS)
-            detected = await detect_from_transactions(to_detection_dicts(rows))
-            await upsert_detected_subscriptions(
-                db, current_user.id, detected, linked_account_id=account.id
-            )
-        return await _active_subscriptions_response(db, current_user.id)
-    except ItemReauthRequired as exc:
-        # Not a server error: the bank connection needs re-authentication.
-        # The account status was already set to login_required.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{exc} needs to be reconnected — open Settings, use the "
-                "Reconnect button next to the bank, then sync again."
-            ),
-        )
-    except Exception as exc:
-        await db.rollback()
-        code = plaid_error_code_from_exception(exc)
-        logger.exception(
-            "Failed to sync subscriptions",
-            extra={"plaid_error_code": code} if code else None,
-        )
-        raise HTTPException(status_code=500, detail="Failed to sync subscriptions")
+    accounts = [a for a in accounts if a.item_id]
+    for account in accounts:
+        account.sync_status = "syncing"
+    await db.commit()
+    for account in accounts:
+        await enqueue_item_sync(account.item_id)
+    return {"status": "syncing"}
+
+
+@router.get("/subscriptions/sync/status")
+async def get_sync_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Poll target for the manual Sync button.
+
+    Reports whether any linked account's durable sync job is still running,
+    plus anything the user needs to act on once it finishes (a bank
+    connection that needs reconnecting, or a job that failed).
+    """
+    accounts = await get_linked_accounts(current_user, db)
+    response = await _active_subscriptions_response(db, current_user.id)
+    response["syncing"] = any(a.sync_status == "syncing" for a in accounts)
+    response["reconnect_needed"] = [
+        a.institution_name or "Your bank" for a in accounts if a.status == "login_required"
+    ]
+    response["sync_error"] = any(a.sync_status == "error" for a in accounts)
+    return response
 
 
 @router.get("/summary")
