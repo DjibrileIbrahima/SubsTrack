@@ -43,14 +43,19 @@ async def detect_from_transactions(txns: list[dict]) -> list[dict]:
 # A detected charge matches an existing subscription when the amounts differ
 # by no more than this (relative to the larger of the two). Wide enough to
 # absorb price increases, narrow enough to keep distinct plans separate.
-_AMOUNT_MATCH_TOLERANCE = 0.40
+# Also used outside this module (routes/transactions.py's spending summary)
+# to decide whether a transaction is really one of a subscription's charges —
+# merchant alone is too loose (broad aliases like "APPLE" match any Apple
+# purchase; a stale, now-inactive price tier shares its merchant_key with the
+# active one) so amount has to agree too.
+AMOUNT_MATCH_TOLERANCE = 0.40
 
 
 def _merchant_key(sub: dict) -> str:
     return (sub.get("merchant_key") or sub["merchant"]).lower()
 
 
-def _amount_diff(a: float, b: float) -> float:
+def amount_diff(a: float, b: float) -> float:
     top = max(abs(a), abs(b))
     return abs(a - b) / top if top else 0.0
 
@@ -78,8 +83,8 @@ async def _find_existing(
     if not rows:
         return None
 
-    best = min(rows, key=lambda r: _amount_diff(float(r.amount), float(sub["amount"])))
-    if _amount_diff(float(best.amount), float(sub["amount"])) <= _AMOUNT_MATCH_TOLERANCE:
+    best = min(rows, key=lambda r: amount_diff(float(r.amount), float(sub["amount"])))
+    if amount_diff(float(best.amount), float(sub["amount"])) <= AMOUNT_MATCH_TOLERANCE:
         return best
 
     label = sub["merchant"].lower()

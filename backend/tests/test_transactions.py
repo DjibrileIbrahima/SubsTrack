@@ -932,6 +932,45 @@ class TestGetSummary:
         assert r.status_code == 200
         assert r.json()["monthly_summary"] == []
 
+    async def test_excludes_unrelated_purchase_sharing_a_broad_merchant_alias(
+        self, auth_client, test_account, db, test_user
+    ):
+        """Merchant match alone isn't enough: normalize_merchant("APPLE") matches
+        any Apple purchase, so a one-off hardware buy must still be excluded
+        because its amount doesn't match the subscription's."""
+        db.add(Subscription(user_id=test_user.id, merchant="Apple", merchant_key="apple",
+                            amount=9.99, frequency="monthly", source="plaid"))
+        db.add(_make_txn_row(test_user.id, test_account.id, "APPLE.COM/BILL", 9.99, days_back=10))
+        db.add(_make_txn_row(test_user.id, test_account.id, "APPLE STORE", 1999.00, days_back=10))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        entry = next(s for s in r.json()["monthly_summary"] if s["month"] == month)
+        assert abs(entry["total"] - 9.99) < 0.01  # the MacBook purchase excluded
+
+    async def test_excludes_stale_price_tier_sharing_a_merchant_key(
+        self, auth_client, test_account, db, test_user
+    ):
+        """An old, now-cancelled price tier shares its merchant_key with a
+        still-active tier — its historical charges must not count."""
+        db.add(Subscription(user_id=test_user.id, merchant="Spotify", merchant_key="spotify",
+                            amount=9.99, frequency="monthly", source="plaid"))
+        db.add(Subscription(user_id=test_user.id, merchant="Spotify Family ($16.99)", merchant_key="spotify",
+                            amount=16.99, frequency="monthly", source="plaid", is_active=False))
+        db.add(_make_txn_row(test_user.id, test_account.id, "SPOTIFY", 9.99, days_back=10))
+        db.add(_make_txn_row(test_user.id, test_account.id, "SPOTIFY", 16.99, days_back=40))
+        await db.flush()
+
+        r = await auth_client.get("/api/summary")
+        assert r.status_code == 200
+        totals = {s["month"]: s["total"] for s in r.json()["monthly_summary"]}
+        recent_month = (date.today() - timedelta(days=10)).isoformat()[:7]
+        older_month = (date.today() - timedelta(days=40)).isoformat()[:7]
+        assert abs(totals.get(recent_month, 0) - 9.99) < 0.01
+        assert older_month not in totals or totals[older_month] == 0  # stale tier excluded
+
     async def test_ignores_negative_amounts(self, auth_client, test_account, db, test_user):
         """Negative transactions (refunds) should be excluded from summary."""
         db.add(Subscription(user_id=test_user.id, merchant="Netflix", merchant_key="netflix",
