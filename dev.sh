@@ -69,8 +69,12 @@ PIP="$(venv_bin pip)"
 
 # ── install / sync requirements ───────────────────────────────────────────────
 
+# Dev lockfile = runtime deps + pytest/ruff/bandit, so `pytest -v` works in the
+# venv this script builds. Both lockfiles are compiled for 3.12 (the Docker/CI
+# runtime); on a newer local Python a pin may lack a matching wheel and build
+# from source. If that bites, make .venv a 3.12 venv: uv venv --python 3.12
 log "Checking Python requirements..."
-"$PIP" install -q -r "$(win_path "$BACKEND/requirements.txt")"
+"$PIP" install -q -r "$(win_path "$BACKEND/requirements-dev.txt")"
 log "Requirements up to date."
 
 command -v docker &>/dev/null || err "Docker not found. Install Docker Desktop and try again."

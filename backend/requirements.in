@@ -1,0 +1,44 @@
+# Runtime dependencies — SOURCE OF TRUTH.
+#
+# Edit this file, never requirements.txt. requirements.txt is a fully-pinned
+# lockfile compiled from this one; the Dockerfile and CI install from the lock
+# so every build gets byte-identical dependencies.
+#
+# Regenerate after editing (targets 3.12 to match backend/Dockerfile and CI,
+# NOT whatever Python you have locally):
+#
+#     cd backend
+#     uv pip compile --python-version 3.12 requirements.in -o requirements.txt
+#     uv pip compile --python-version 3.12 requirements-dev.in -o requirements-dev.txt
+#
+# Commit requirements.in and both lockfiles together.
+
+fastapi
+uvicorn
+plaid-python
+python-dotenv
+arq
+sqlalchemy[asyncio]
+asyncpg
+alembic
+cryptography
+bcrypt
+PyJWT
+httpx
+email-validator
+slowapi
+# Pinned to 5.x by arq, which hard-requires redis[hiredis]<6. redis cannot move
+# to 6+ without replacing arq (it runs the durable job queue: Plaid webhooks,
+# manual sync, the alert cron). redis-py 8 also defaults to the RESP3 wire
+# protocol, so it is a real migration, not a version bump. Leave this alone —
+# the resolver enforces the ceiling via arq, no explicit pin needed here.
+redis
+groq
+pyotp
+boto3  # AWS KMS envelope encryption for secrets at rest
+# Observability
+sentry-sdk[fastapi]
+prometheus-fastapi-instrumentator
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-otlp-proto-grpc
