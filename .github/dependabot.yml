@@ -1,0 +1,62 @@
+version: 2
+
+# Dependencies are pinned (backend/requirements*.txt, frontend/package-lock.json)
+# so nothing floats on deploy. Dependabot is how they move: one reviewable PR
+# that runs the full CI suite before anything reaches production.
+#
+# Minor and patch bumps are grouped into a single PR per ecosystem to keep the
+# review load sane; majors come through individually because they need real
+# scrutiny (e.g. plaid-python and cryptography majors).
+
+updates:
+  # ── Backend (pip) ──────────────────────────────────────────────────────────
+  # Dependabot reads requirements.in as the source and recompiles the lockfile.
+  # Verify the first PR updates requirements.txt/requirements-dev.txt and not
+  # just the .in file; if it edits a lockfile without recompiling, regenerate
+  # with the uv command documented at the top of requirements.in before merging.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # arq hard-requires redis[hiredis]<6, and redis-py 8 switches the default
+      # wire protocol to RESP3. Moving past 5.x means replacing arq, which runs
+      # the durable job queue. Deliberate migration, not a Dependabot bump.
+      - dependency-name: redis
+        update-types: [version-update:semver-major]
+
+  # ── Frontend (npm) ─────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        update-types: [minor, patch]
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  # ── Base images ────────────────────────────────────────────────────────────
+  # python:3.12-slim, node:20-alpine, nginx:alpine
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday

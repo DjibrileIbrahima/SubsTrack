@@ -1,0 +1,18 @@
+# Dev/CI dependencies — SOURCE OF TRUTH. See requirements.in for the
+# regeneration command. Installs everything in requirements.in plus the test
+# and lint tooling, so CI pins its tools too (an unpinned ruff release used to
+# be able to fail an unrelated PR).
+#
+# The production image installs requirements.txt only — never this file.
+
+-r requirements.in
+
+# Tests
+pytest
+pytest-asyncio
+pytest-mock
+aiosqlite  # in-memory SQLite driver used by conftest.py
+
+# Lint / security scan
+ruff
+bandit[toml]

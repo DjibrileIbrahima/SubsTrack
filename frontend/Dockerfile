@@ -2,8 +2,12 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json .
-RUN npm install
+# Copy the lockfile too — `npm ci` installs the exact tree in package-lock.json
+# and fails if the lock and package.json disagree. `npm install` (the previous
+# command here) ignored the lock entirely because it was never copied in, so
+# every image build silently re-resolved to the newest matching versions.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build

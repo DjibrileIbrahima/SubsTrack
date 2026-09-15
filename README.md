@@ -25,7 +25,10 @@ SubsTrack/
 │   ├── limiter.py                  # slowapi rate limiter
 │   ├── worker.py                   # ARQ WorkerSettings + alert cron job
 │   ├── plaid_client.py
-│   ├── requirements.txt
+│   ├── requirements.in             # Runtime deps — edit this
+│   ├── requirements.txt            # Compiled lockfile — generated, don't edit
+│   ├── requirements-dev.in         # + test/lint tooling
+│   ├── requirements-dev.txt        # Compiled lockfile — generated, don't edit
 │   ├── db/
 │   │   ├── database.py             # Engine + slow query detection
 │   │   ├── models.py
@@ -279,12 +282,42 @@ bash dev.sh
 
 ### Running tests
 ```bash
-# Backend (450 tests, no server needed)
+# Backend (466 tests, no server needed)
 cd backend && pytest -v
 
 # Frontend
 cd frontend && npm test -- --run
 ```
+
+### Dependencies
+
+Both halves are **fully pinned**. Docker builds and CI install from lockfiles,
+so a deploy can never silently pick up a new upstream release — dependency
+changes arrive as reviewable PRs (Dependabot, weekly) that run CI first.
+
+| Edit this | Generated from it |
+|---|---|
+| `backend/requirements.in` | `backend/requirements.txt` |
+| `backend/requirements-dev.in` | `backend/requirements-dev.txt` |
+| `frontend/package.json` | `frontend/package-lock.json` |
+
+Adding or bumping a backend dependency — edit the `.in` file, then recompile
+**for 3.12**, which is what the Dockerfile and CI run (not necessarily your
+local Python):
+
+```bash
+cd backend
+uv pip compile --python-version 3.12 requirements.in -o requirements.txt
+uv pip compile --python-version 3.12 requirements-dev.in -o requirements-dev.txt
+```
+
+Commit the `.in` and both lockfiles together. Frontend: use `npm install <pkg>`
+locally to update `package-lock.json`, and commit it — CI and Docker both run
+`npm ci`, which fails if the lock and `package.json` disagree.
+
+> **redis is capped at 5.x.** `arq` hard-requires `redis[hiredis]<6`, and arq
+> runs the durable job queue (Plaid webhooks, manual sync, alert cron). The
+> resolver enforces this; Dependabot is configured to skip redis majors.
 
 ---
 

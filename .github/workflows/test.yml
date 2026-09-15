@@ -22,10 +22,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements-dev.txt
 
+      # Installs the pinned ruff from the dev lockfile. Don't switch this back
+      # to a bare `pip install ruff` — a new ruff release would then be able to
+      # fail CI on an unrelated PR.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install -r backend/requirements-dev.txt
 
       - name: Run ruff
         working-directory: backend
@@ -42,9 +45,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
 
       - name: Install bandit
-        run: pip install bandit[toml]
+        run: pip install -r backend/requirements-dev.txt
 
       - name: Run bandit
         working-directory: backend
@@ -62,10 +67,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements-dev.txt
 
+      # requirements-dev.txt is the pinned lockfile: runtime deps plus pytest,
+      # pytest-asyncio, pytest-mock and aiosqlite. Add new test deps to
+      # requirements-dev.in and recompile, not as bare names here.
       - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt pytest pytest-asyncio pytest-mock aiosqlite
+        run: pip install -r backend/requirements-dev.txt
 
       - name: Run backend tests
         working-directory: backend
@@ -94,7 +102,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Run frontend tests
         working-directory: frontend
@@ -116,7 +124,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: frontend
